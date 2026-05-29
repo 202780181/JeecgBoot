@@ -1,0 +1,153 @@
+// #ifdef VUE3 || VUE2 && uniVersion >= 4.56
+@use "sass:math";
+// #endif
+@function div($dividend, $divisor) {
+	// #ifdef VUE3 || VUE2 && uniVersion >= 4.56
+	@return math.div($dividend, $divisor);
+	// #endif
+	// #ifndef VUE3 || VUE2 && uniVersion >= 4.56
+	@return $dividend / $divisor;
+	// #endif
+}
+
+@function to-number($string) {
+   $result: 0;
+   $is-negative: str-slice($string, 1, 1) == '-';
+   $length: str-length($string);
+   
+   @if $is-negative {
+       $string: str-slice($string, 2);
+       $length: $length - 1;
+    }
+	
+	$decimal-index: str-index($string, '.');
+	
+	@if $decimal-index {
+		$decimal-str: str-slice($string, $decimal-index + 1);
+		$decimal-length: str-length($decimal-str);
+		$length: $length - $decimal-length - 1;
+		$string: str-slice($string, 1, $decimal-index - 1);
+		
+		$result: to-number($decimal-str) * pow(10, $decimal-length * -1);
+	}
+   $numbers:(
+	'0': 0,
+	'1': 1,
+	'2': 2,
+	'3': 3,
+	'4': 4,
+	'5': 5,
+	'6': 6,
+	'7': 7,
+	'8': 8,
+	'9': 9,
+   );
+	
+	@for $i from 1 through $length {
+		$key: str-slice($string, $i, $i);
+		$number: map-get($numbers, $key);
+		$digit: if($number == 0, 0, if($length - $i > 0, pow(10, $length - $i), 0));
+		$result: $result + $digit * $number + if($length - $i == 0, $number, 0);
+	}
+	@return if($is-negative, $result * -1, $result) ;
+}
+
+// 由于vue2 h5和app不支持动态rpx 故转成px
+@function rpx-to-px($rpx-string) {
+	@if type-of($rpx-string) == list {
+		$new-list: ();
+		@each $value in $rpx-string {
+			$v: $value + '';
+			$start: str-index($v, 'rpx');
+			@if $start {
+				 $new-list: append($new-list, rpx-to-px($v));
+			} @else {
+				$new-list: append($new-list, $value);
+			}
+		}
+		@return $new-list;
+	}
+	
+	@if type-of($rpx-string) == number and comparable($rpx-string, 1rpx) {
+		@return rpx-to-px($rpx-string + '');
+	}
+	
+	@if type-of($rpx-string) != string {
+	   @return $rpx-string;
+	}
+	$start: str-index($rpx-string, 'rpx');
+	$number-map: (
+		'-': 1,
+		'0': 1,
+		'1': 1,
+		'2': 1,
+		'3': 1,
+		'4': 1,
+		'5': 1,
+		'6': 1,
+		'7': 1,
+		'8': 1,
+		'9': 1,
+	   );
+	@if not $start {
+	  @return $rpx-string;
+	}
+	$result: '';
+	@while $start {
+		// 获取 'rpx' 前的数字
+		$number-end: $start - 1;
+		$number-start: $number-end;
+		@while $number-start > 0 and map-get($number-map, str-slice($rpx-string, $number-start, $number-start)) ==1 {
+			$number-start: $number-start - 1;
+		}
+		// 提取数字部分
+		$number: to-number(str-slice($rpx-string, $number-start + 1, $number-end));
+		
+		// 转换 'rpx' 到 'px'
+		// $px-value: ($number / 2) + 'px';
+		$px-value: div($number, 2) + 'px';
+		$result: $result + str-slice($rpx-string, 0, $number-start) + $px-value;
+		
+		// 更新字符串和起始位置
+		$rpx-string: str-slice($rpx-string, $start + 3);
+		$start: str-index($rpx-string, 'rpx');
+	}
+	
+	@return $result + $rpx-string;
+}
+
+@function create-var($name, $values...) {
+	// 将不定数量的参数转换为列表
+	$value-list: $values;
+	$css-value: null;
+	@if length($value-list) == 0 {
+		@warn "The list must have at least 1 values.";
+	} @else {
+		// 初始化CSS变量的值为列表中的第一个值
+		/* #ifndef VUE2 */
+		$css-value: nth($value-list, 1);
+		/* #endif */
+		/* #ifdef VUE2 */
+		$css-value: rpx-to-px(nth($value-list, 1));
+		/* #endif */
+	}
+	// 检查列表长度是否大于等于2
+	@if length($value-list) >= 2 {
+	    // 使用@for循环遍历剩余的值，并构建CSS变量的完整值
+	    @for $i from 2 through length($value-list) {
+			/* #ifndef VUE2 */
+			$css-value: $css-value + ", " + nth($value-list, $i);
+			/* #endif */
+			/* #ifdef VUE2 */
+			$css-value: $css-value + ", " + rpx-to-px(nth($value-list, $i));
+			/* #endif */
+	    }
+	}
+	
+	/* #ifndef APP-NVUE || APP-ANDROID || APP-IOS */
+	@return var(--l-#{$name}, #{$css-value});
+	/* #endif */
+	/* #ifdef APP-NVUE || APP-ANDROID || APP-IOS */
+	@return $css-value;
+	/* #endif */
+}

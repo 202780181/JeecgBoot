@@ -1,0 +1,37 @@
+$limeThemes: light, dark;
+$theme: light;
+
+@mixin use-theme($mode: null) {
+	@if $mode != null {
+		/* #ifndef APP-ANDROID || APP-IOS || APP-NVUE */
+		@media (prefers-color-scheme: $mode) {
+			@content;
+		}
+		/* #endif */
+		/* #ifdef APP-ANDROID || APP-IOS || APP-NVUE */
+		&.#{$mode} {
+			@content;
+		}
+		/* #endif */
+	} @else {
+		@each $mode in $limeThemes {
+			$theme: $mode !global;
+			/* #ifndef APP-ANDROID || APP-IOS || APP-NVUE */
+			@media (prefers-color-scheme: $mode) {
+				@content;
+			}
+			/* #endif */
+			
+			/* #ifdef APP-ANDROID || APP-IOS || APP-NVUE */
+			&.#{$mode} {
+				@content;
+			}
+			/* #endif */
+		}
+	}
+	
+}
+
+@function get-var($themes, $key) {
+	@return map-get($themes, $key)
+}

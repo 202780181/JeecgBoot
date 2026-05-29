@@ -1,0 +1,79 @@
+<template>
+	<l-picker 
+		v-model="innerValue"
+		:cancelBtn="cancelBtn" 
+		:cancelStyle="cancelStyle" 
+		:confirmBtn="confirmBtn"
+		:confirmStyle="confirmStyle" 
+		:title="title" 
+		:titleStyle="titleStyle" 
+		:loading="loading"
+		:loadingColor="loadingColor" 
+		:loadingMaskColor="loadingMaskColor" 
+		:loadingSize="loadingSize"
+		:itemHeight="itemHeight" 
+		:itemColor="itemColor" 
+		:itemFontSize="itemFontSize" 
+		:itemActiveColor="itemActiveColor"
+		:indicatorStyle="indicatorStyle" 
+		:bgColor="bgColor" 
+		:groupHeight="groupHeight" 
+		:radius="radius"
+		:resetIndex="resetIndex" 
+		:columns="innerColumns" 
+		@cancel="onCancel" 
+		@confirm="onConfirm" 
+		@pick="onPick">
+	</l-picker>
+</template>
+
+<script lang="uts" setup>
+	import { PickerValue, PickerColumn, PickerColumnItem, PickerPickEvent, PickerConfirmEvent } from '../l-picker/type';
+	import { CascadeProps } from './type';
+	import { parseKeys, formatCascadeColumns } from './utils';
+	
+	const emit = defineEmits(['change', 'cancel', 'pick', 'confirm', 'update:modelValue', 'update:value'])
+	const props = withDefaults(defineProps<CascadeProps>(), {
+		columns: [] as PickerColumnItem[],
+		loading: false,
+		resetIndex: false,
+		loadingSize: '64rpx'
+	})
+	const keys = parseKeys(props.keys)
+	const innerValue = ref<PickerValue[]>(props.value ?? props.modelValue ?? props.defaultValue ?? []);
+	// const innerValue = computed({
+	// 	set(value : PickerValue[]) {
+	// 		curValueArray.value = value;
+	// 		emit('update:modelValue', value)
+	// 	},
+	// 	get() : PickerValue[] {
+	// 		return props.value ?? props.modelValue ?? curValueArray.value
+	// 	}
+	// } as WritableComputedOptions<PickerValue[]>)
+
+
+	const innerColumns = computed(() : PickerColumn[] => {
+		return formatCascadeColumns(props.columns, keys, innerValue)
+	})
+
+	const onPick = ({ values, column, index } : PickerPickEvent) => {
+		innerValue.value = [...values]
+	}
+	
+	const onConfirm = (options : PickerConfirmEvent) => {
+		emit('confirm', options)
+	}
+	const onCancel = () => {
+		emit('cancel')
+	}
+	
+	watchEffect(()=>{
+		emit('update:modelValue', innerValue.value)
+	})
+	
+	
+</script>
+
+<style>
+
+</style>

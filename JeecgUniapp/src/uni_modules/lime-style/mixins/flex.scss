@@ -1,0 +1,13 @@
+@mixin flex {
+	/* #ifndef UNI-APP-X */
+	display: flex;
+	/* #endif */
+}
+@mixin flex-column {
+	/* #ifndef UNI-APP-X */
+	flex-direction: column;
+	/* #endif */
+}
+@mixin flex-row {
+	flex-direction: row;
+}

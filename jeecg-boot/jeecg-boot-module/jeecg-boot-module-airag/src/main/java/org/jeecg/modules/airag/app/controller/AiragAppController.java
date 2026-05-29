@@ -14,6 +14,7 @@ import org.jeecg.config.mybatis.MybatisPlusSaasConfig;
 import org.jeecg.config.shiro.IgnoreAuth;
 import org.jeecg.modules.airag.app.consts.AiAppConsts;
 import org.jeecg.modules.airag.app.entity.AiragApp;
+import org.jeecg.modules.airag.app.service.IAiOrchestratorService;
 import org.jeecg.modules.airag.app.service.IAiragAppService;
 import org.jeecg.modules.airag.app.service.IAiragChatService;
 import org.jeecg.modules.airag.app.vo.AiArticleWriteVersionVo;
@@ -43,6 +44,9 @@ public class AiragAppController extends JeecgController<AiragApp, IAiragAppServi
 
     @Autowired
     private IAiragChatService airagChatService;
+
+    @Autowired
+    private IAiOrchestratorService aiOrchestratorService;
 
     /**
      * 分页列表查询
@@ -188,6 +192,14 @@ public class AiragAppController extends JeecgController<AiragApp, IAiragAppServi
     @PostMapping(value = "/debug")
     public SseEmitter debugApp(@RequestBody AppDebugParams appDebugParams) {
         return airagChatService.debugApp(appDebugParams);
+    }
+
+    /**
+     * AI 应用开发页调试，代理到 ai-orchestrator。
+     */
+    @PostMapping(value = "/orchestrator/debug")
+    public SseEmitter debugByOrchestrator(@RequestBody AppDebugParams appDebugParams, HttpServletRequest request) {
+        return aiOrchestratorService.debug(appDebugParams, request);
     }
 
     /**

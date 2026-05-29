@@ -6,6 +6,7 @@ rebel.xml
 ## backend
 **/target
 **/logs
+jeecg-boot/config/
 
 ## front
 **/*.lock
@@ -16,3 +17,12 @@ derby.log
 .cursor
 .history
 .claude
+
+## python
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/*.egg-info/
+**/.mypy_cache/
+**/.ruff_cache/

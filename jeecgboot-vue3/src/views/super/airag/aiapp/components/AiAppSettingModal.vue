@@ -25,15 +25,12 @@
       </template>
       <div style="height: 100%; width: 100%">
         <a-row :span="24">
-          <a-col :span="10">
+          <a-col :span="24">
             <div class="orchestration">编排</div>
-          </a-col>
-          <a-col :span="14">
-            <div class="view">预览</div>
           </a-col>
         </a-row>
         <a-row :span="24">
-          <a-col :span="10" class="setting-left">
+          <a-col :span="24" class="setting-left">
             <a-form class="antd-modal-form" ref="formRef" :model="formState" :rules="validatorRules">
               <a-row>
                 <a-col :span="24" v-if="formState.type==='chatFLow'" class="mt-10">
@@ -461,20 +458,6 @@
               </a-row>
             </a-form>
           </a-col>
-          <a-col :span="14" class="setting-right">
-            <chat 
-              :uuid="uuid" 
-              :prologue="prologue" 
-              :appId="appId" 
-              :formState="formState" 
-              url="/airag/app/debug" 
-              :presetQuestion="presetQuestion" 
-              :quickCommandData="quickCommandList"
-              :hasExtraFlowInputs="hasExtraFlowInputs"
-              :conversationSettings="conversationSettings"
-              @edit-settings="handleEditSettings"
-            ></chat>
-          </a-col>
         </a-row>
       </div>
     </BasicModal>
@@ -495,21 +478,13 @@
     <AiAppPromptMarketModal @register="registerAiPromptSelectModal" @ok="handleAiAppPromptOk"></AiAppPromptMarketModal>
     <!--  Ai快捷指令  -->
     <AiAppQuickCommandModal @register="registerAiAppCommandModal" @ok="handleAiAppCommandOk" @update-ok="handleAiAppCommandUpdateOk"></AiAppQuickCommandModal>
-    <!-- 对话设置弹窗 -->
-    <ConversationSettingsModal
-      ref="settingsModalRef"
-      :flowInputs="flowInputs"
-      conversationId="debug"
-      :existingSettings="conversationSettings"
-      @ok="handleSettingsOk"
-    />
     <!--  用户变量  -->
     <AiUserVariablesModal @register="registerVariablesModal" @ok="handleVariablesOk"></AiUserVariablesModal>
   </div>
 </template>
 
 <script lang="ts">
-  import { ref, reactive, nextTick, computed, watch } from 'vue';
+  import { ref, reactive, nextTick, computed } from 'vue';
   import BasicModal from '@/components/Modal/src/BasicModal.vue';
   import { useModal, useModalInner } from '@/components/Modal';
   import { Form, TimePicker, Collapse, CollapsePanel } from 'ant-design-vue';
@@ -525,8 +500,6 @@
   import AiAppQuickCommandModal from './AiAppQuickCommandModal.vue';
   import AiAppAddFlowModal from './AiAppAddFlowModal.vue';
   import AiAppModal from './AiAppModal.vue';
-  import chat from '../chat/chat.vue';
-  import ConversationSettingsModal from '../chat/components/ConversationSettingsModal.vue';
   import knowledge from '/@/views/super/airag/aiknowledge/icon/knowledge.png';
   import { cloneDeep } from 'lodash-es';
   import JImageUpload from '@/components/Form/src/jeecg/components/JImageUpload.vue';
@@ -554,8 +527,6 @@
       AiAppParamsSettingModal,
       AiAppAddFlowModal,
       AiAppModal,
-      chat,
-      ConversationSettingsModal,
       AiAppGeneratedPromptModal,
       AiAppQuickCommandModal,
       AiAppPromptMarketModal,
@@ -640,12 +611,6 @@
       const showToolProcessChecked = ref<boolean>(true);
       // 是否已发布
       const isRelease = ref<boolean>(false);
-      //对话设置弹窗ref
-      const settingsModalRef = ref();
-      //工作流入参列表
-      const flowInputs = ref<any[]>([]);
-      //对话设置（用于调试模式）
-      const conversationSettings = ref<Record<string, any>>({});
       //流程数据集合
       const flowDataList = ref<any>([]);
       //多个流程id
@@ -1394,61 +1359,6 @@
         formState.metadata = JSON.stringify(metadata.value);
       }
 
-      // 检查是否有额外的工作流入参
-      const hasExtraFlowInputs = computed(() => {
-        if (!flowData.value || !flowData.value.metadata) {
-          return false;
-        }
-        try {
-          const flowInputsList = flowData.value.metadata || [];
-          
-          // 过滤掉固定参数
-          const fixedParams = ['history', 'content', 'images'];
-          const extraInputs = flowInputsList.filter((input: any) => !fixedParams.includes(input.field));
-          
-          return extraInputs.length > 0;
-        } catch (e) {
-          console.error('解析flowData.metadata失败', e);
-          return false;
-        }
-      });
-
-      // 监听flowData变化，更新flowInputs
-      watch(
-        () => flowData.value,
-        (val) => {
-          if (!val || !val.metadata) {
-            flowInputs.value = [];
-            return;
-          }
-          try {
-            const flowInputsList = val.metadata || [];
-            flowInputs.value = flowInputsList;
-          } catch (e) {
-            console.error('解析flowData.metadata失败', e);
-            flowInputs.value = [];
-          }
-        },
-        { immediate: true, deep: true }
-      );
-
-      /**
-       * 打开对话设置弹窗
-       */
-      function handleEditSettings() {
-        if (settingsModalRef.value) {
-          settingsModalRef.value.open();
-        }
-      }
-
-      /**
-       * 对话设置确定回调
-       */
-      function handleSettingsOk(settings: Record<string, any>) {
-        conversationSettings.value = settings;
-        console.log('调试模式对话设置已更新:', settings);
-      }
-
       /**
        * 模型ID变化处理
        * 查询模型信息并更新到metadata中，供chat组件使用
@@ -1715,12 +1625,6 @@
         multiSessionChecked,
         handleMultiSessionChange,
         pluginIds,
-        settingsModalRef,
-        flowInputs,
-        conversationSettings,
-        hasExtraFlowInputs,
-        handleEditSettings,
-        handleSettingsOk,
         handleModelIdChange,
         flowDataList,
         multiple,
@@ -1774,12 +1678,6 @@
     padding: 20px;
     overflow-y: auto;
     height: (100vh - 15px);
-  }
-
-  .setting-right {
-    overflow-y: auto;
-    height: (100vh - 15px);
-    border-left: 1px solid #dee0e3;
   }
 
   :deep(.ant-input-number) {

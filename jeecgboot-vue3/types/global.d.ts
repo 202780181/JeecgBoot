@@ -72,6 +72,8 @@ declare global {
     VITE_GLOB_RUN_PLATFORM?: 'web' | 'electron';
     // iconify图标使用在线还是本地。可选属性：online, local
     VITE_GLOB_ICONIFY_USE_TYPE?: 'online' | 'local';
+    // AI Orchestrator 服务地址
+    VITE_AI_ORCHESTRATOR_URL?: string;
   }
 
   declare function parseInt(s: string | number, radix?: number): number;

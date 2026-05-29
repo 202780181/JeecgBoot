@@ -1,0 +1,184 @@
+{
+  "id": "4828283",
+  "name": "uniapp",
+  "font_family": "u-iconfont",
+  "css_prefix_text": "u-icon-",
+  "description": "",
+  "glyphs": [
+    {
+      "icon_id": "4519495",
+      "name": "清除",
+      "font_class": "close",
+      "unicode": "e653",
+      "unicode_decimal": 58963
+    },
+    {
+      "icon_id": "23191220",
+      "name": "文件",
+      "font_class": "link",
+      "unicode": "e615",
+      "unicode_decimal": 58901
+    },
+    {
+      "icon_id": "34833980",
+      "name": "个人",
+      "font_class": "person",
+      "unicode": "e60c",
+      "unicode_decimal": 58892
+    },
+    {
+      "icon_id": "6241501",
+      "name": "删除",
+      "font_class": "remove",
+      "unicode": "e627",
+      "unicode_decimal": 58919
+    },
+    {
+      "icon_id": "9647671",
+      "name": "新增",
+      "font_class": "newAdd",
+      "unicode": "e665",
+      "unicode_decimal": 58981
+    },
+    {
+      "icon_id": "201648",
+      "name": "3.1 时间",
+      "font_class": "31shijian",
+      "unicode": "e602",
+      "unicode_decimal": 58882
+    },
+    {
+      "icon_id": "1727436",
+      "name": "211铃铛-线性",
+      "font_class": "message",
+      "unicode": "e8c0",
+      "unicode_decimal": 59584
+    },
+    {
+      "icon_id": "4657676",
+      "name": "流程管理",
+      "font_class": "bpm",
+      "unicode": "e606",
+      "unicode_decimal": 58886
+    },
+    {
+      "icon_id": "6776387",
+      "name": "声音开",
+      "font_class": "msg",
+      "unicode": "eca6",
+      "unicode_decimal": 60582
+    },
+    {
+      "icon_id": "13001501",
+      "name": "邮箱",
+      "font_class": "email",
+      "unicode": "e61c",
+      "unicode_decimal": 58908
+    },
+    {
+      "icon_id": "19108133",
+      "name": "工作台",
+      "font_class": "tabbar-workHome",
+      "unicode": "e619",
+      "unicode_decimal": 58905
+    },
+    {
+      "icon_id": "9635528",
+      "name": "图表-表格-简单表格",
+      "font_class": "table",
+      "unicode": "e62b",
+      "unicode_decimal": 58923
+    },
+    {
+      "icon_id": "739100",
+      "name": "编辑",
+      "font_class": "edit",
+      "unicode": "e62d",
+      "unicode_decimal": 58925
+    },
+    {
+      "icon_id": "1166058",
+      "name": "筛选",
+      "font_class": "filter",
+      "unicode": "e67f",
+      "unicode_decimal": 59007
+    },
+    {
+      "icon_id": "3930485",
+      "name": "排序",
+      "font_class": "sort",
+      "unicode": "e617",
+      "unicode_decimal": 58903
+    },
+    {
+      "icon_id": "4922127",
+      "name": "新增",
+      "font_class": "add",
+      "unicode": "e662",
+      "unicode_decimal": 58978
+    },
+    {
+      "icon_id": "9250104",
+      "name": "缺省-头像",
+      "font_class": "quesheng-touxiang",
+      "unicode": "e6b0",
+      "unicode_decimal": 59056
+    },
+    {
+      "icon_id": "1183027",
+      "name": "首页",
+      "font_class": "tabbar-home",
+      "unicode": "e65d",
+      "unicode_decimal": 58973
+    },
+    {
+      "icon_id": "10056834",
+      "name": "用户",
+      "font_class": "tabbar-user",
+      "unicode": "e618",
+      "unicode_decimal": 58904
+    },
+    {
+      "icon_id": "11121393",
+      "name": "代码示例",
+      "font_class": "tabbar-demo",
+      "unicode": "e62c",
+      "unicode_decimal": 58924
+    },
+    {
+      "icon_id": "25311944",
+      "name": "消息",
+      "font_class": "tabbar-message",
+      "unicode": "e601",
+      "unicode_decimal": 58881
+    },
+    {
+      "icon_id": "12857279",
+      "name": "收藏",
+      "font_class": "star",
+      "unicode": "e600",
+      "unicode_decimal": 58880
+    },
+    {
+      "icon_id": "34631592",
+      "name": "五角星",
+      "font_class": "star-fill",
+      "unicode": "e6a6",
+      "unicode_decimal": 59046
+    },
+    {
+      "icon_id": "577362",
+      "name": "时钟",
+      "font_class": "clock",
+      "unicode": "e74f",
+      "unicode_decimal": 59215
+    },
+    {
+      "icon_id": "3640170",
+      "name": "成功",
+      "font_class": "success",
+      "unicode": "e605",
+      "unicode_decimal": 58885
+    }
+  ]
+}

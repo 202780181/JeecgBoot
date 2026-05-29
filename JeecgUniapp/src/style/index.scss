@@ -1,0 +1,143 @@
+// @import './iconfont.css';
+@import '../static/iconfont/iconfont.css';
+@import './chat/style.scss';
+.test {
+  // 可以通过 @apply 多个样式封装整体样式
+  @apply mt-4 ml-4;
+
+  padding-top: 4px;
+  color: red;
+}
+
+:root,
+page {
+  .uni-tabbar__label {
+    margin-top: 1px !important;
+  }
+  background-color: #f1f1f1;
+
+  --UI-BG: #fff;
+  --UI-BG-1: #f7f7f7;
+  --UI-BG-2: #fff;
+  --UI-BG-3: #f7f7f7;
+  --UI-BG-4: #4c4c4c;
+  --UI-BG-5: #fff;
+  --UI-FG: #000;
+  --UI-FG-0: rgba(0, 0, 0, 0.9);
+  --UI-FG-HALF: rgba(0, 0, 0, 0.9);
+  --UI-FG-1: rgba(0, 0, 0, 0.5);
+  --UI-FG-2: rgba(0, 0, 0, 0.3);
+  --UI-FG-3: rgba(0, 0, 0, 0.1);
+  --color-gray: #aaa;
+  --color-grey: #8799a3;
+  --color-orange: #f37b1d;
+  --color-olive: #8dc63f;
+  --color-cyan: #1cbbb4;
+  --color-red: #e54d42;
+  --color-yellow: #fbbd08;
+  --color-blue: #0081ff;
+  --color-green: #39b54a;
+
+  .cu-text-grey {
+    color: var(--color-grey);
+  }
+  .cu-text-gray {
+    color: var(--color-gray);
+  }
+  .cu-text-red {
+    color: var(--color-red);
+  }
+  .cu-text-orange {
+    color: var(--color-orange);
+  }
+  .cu-text-olive {
+    color: var(--color-olive);
+  }
+  .cu-text-red {
+    color: var(--color-red);
+  }
+  .cu-text-cyan {
+    color: var(--color-cyan);
+  }
+  .cu-text-yellow {
+    color: var(--color-yellow);
+  }
+  .cu-text-blue {
+    color: var(--color-blue);
+  }
+  .cu-text-green {
+    color: var(--color-green);
+  }
+  // 主题色
+  --wot-color-theme: #0081ff;
+  // 导航
+  --wot-navbar-color: #fff;
+  --wot-navbar-desc-font-color: #fff;
+  // 文字
+  --wot-text-info-color: var(--UI-FG-0);
+  // 输入框
+  --wot-input-color: #555;
+  --wot-cell-value-color: #555;
+  --wot-textarea-color: #555;
+
+  // 重置 wot-design-uni
+  --wot-input-disabled-color: #bab8b8;
+  --wot-picker-column-disabled-color: #bab8b8;
+  --wot-input-clear-color: #8f8f8f;
+  .wd-button {
+    &.is-round {
+      border-radius: 4px !important;
+    }
+    &.is-plain {
+      overflow: visible;
+    }
+  }
+  .wd-cell__left {
+    align-items: center;
+  }
+  .wd-popup {
+    &.wd-popup--right,
+    &.wd-popup--left {
+      top: 44px;
+      height: calc(100vh - 44px);
+    }
+  }
+  .wd-input {
+    &.is-cell {
+      --wot-cell-title-color: var(--UI-FG-0);
+      --wot-input-cell-padding: 14px;
+      --wot-input-fs: 15px;
+      .wd-input__label.is-required::after {
+        top: 6px;
+      }
+    }
+  }
+  // 万年历组件
+  .uni-calendar {
+    .uni-calendar__header {
+      .uni-calendar__header-btn-box {
+        &:first-child {
+          .uni-calendar__header-text {
+            color: #9f9f9f;
+          }
+        }
+        &:last-child {
+          .uni-calendar__header-text {
+            color: var(--wot-color-theme);
+          }
+        }
+      }
+      .uni-calendar__header-text {
+        text-align: center;
+        width: 100px;
+        font-size: 24px;
+      }
+    }
+  }
+}
+.uni-scroll-view {
+  .uni-scroll-view {
+    // ios13+不需要加这个属性了（这个属性和overflow:hidden一起使用，导致子孙元素即使设置了position:fixed也被裁剪了）
+    -webkit-overflow-scrolling: auto;
+  }
+}

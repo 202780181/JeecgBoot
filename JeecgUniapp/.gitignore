@@ -1,0 +1,15 @@
+node_modules
+dist
+.cache
+
+## ide
+**/.idea
+*.iml
+
+## backend
+**/target
+**/logs
+**/dist
+
+## front
+/yarn-error.log

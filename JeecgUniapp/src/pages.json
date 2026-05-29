@@ -1,0 +1,526 @@
+{
+  "globalStyle": {
+    "navigationStyle": "default",
+    "navigationBarTitleText": "uniapp",
+    "navigationBarBackgroundColor": "#f8f8f8",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#000000"
+  },
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^wd-(.*)": "wot-design-uni/components/wd-$1/wd-$1.vue",
+      "^(?!z-paging-refresh|z-paging-load-more)z-paging(.*)": "z-paging/components/z-paging$1/z-paging$1.vue"
+    }
+  },
+  "tabBar": {
+    "color": "#aaa",
+    "selectedColor": "#39b54a",
+    "backgroundColor": "#F8F8F8",
+    "borderStyle": "black",
+    "height": "50px",
+    "fontSize": "11px",
+    "iconWidth": "24px",
+    "spacing": "3px",
+    "list": [
+      {
+        "iconPath": "static/tabbar/tabbar-message-2.png",
+        "selectedIconPath": "static/tabbar/tabbar-message.png",
+        "pagePath": "pages/message/message",
+        "text": "消息"
+      },
+      {
+        "iconPath": "static/tabbar/tabbar-home-2.png",
+        "selectedIconPath": "static/tabbar/tabbar-home.png",
+        "pagePath": "pages/index/index",
+        "text": "协作"
+      },
+      {
+        "iconPath": "static/tabbar/tabbar-user-2.png",
+        "selectedIconPath": "static/tabbar/tabbar-user.png",
+        "pagePath": "pages/user/people",
+        "text": "个人"
+      }
+    ]
+  },
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "type": "home",
+      "layout": "default",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "首页",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/about/about",
+      "type": "page",
+      "style": {
+        "navigationBarTitleText": "关于"
+      }
+    },
+    {
+      "path": "pages/annotation/annotationDetail",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/annotation/annotationList",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "我的消息",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/demo/demo",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "demo演示",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/demo/form",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "表单",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/demo/indexBar",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "通讯录",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/demo/selectPicker",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "单选多选",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/demo/tree",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "树示例",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/login/login",
+      "type": "page",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/login/loginOauth2",
+      "type": "page"
+    },
+    {
+      "path": "pages/message/message",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/more/more",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "更多",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/user/people",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "个人",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    },
+    {
+      "path": "pages/workHome/workHome",
+      "type": "page",
+      "layout": "default",
+      "style": {
+        "navigationBarTitleText": "工作台",
+        "navigationStyle": "custom",
+        "disableScroll": true,
+        "app-plus": {
+          "bounce": "none"
+        }
+      }
+    }
+  ],
+  "subPackages": [
+    {
+      "root": "pages-home",
+      "pages": [
+        {
+          "path": "home/home",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages-message",
+      "pages": [
+        {
+          "path": "chat/chat",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "聊天",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "chat/chatSetting",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "contacts/contacts",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "联系人",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "moreFunction/moreFunction",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "myGroup/addGroup",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "创建群组",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "myGroup/groupPage",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "myGroup/myGroup",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "personPage/personPage",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "tenant/tenant",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages-user",
+      "pages": [
+        {
+          "path": "location/location",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "organization/organization",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "userDetail/userDetail",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "userEdit/userEdit",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages-work",
+      "pages": [
+        {
+          "path": "dragPage/index",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "仪表盘",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "onlinePage/onlineAdd",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "Online表单新增",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "onlinePage/onlineDetail",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "Online表单详情",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "onlinePage/onlineEdit",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "Online表单编辑",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages-sub",
+      "pages": [
+        {
+          "path": "online/online",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "online",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "online/onlineCard",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        },
+        {
+          "path": "online/onlineTable",
+          "type": "page",
+          "layout": "default",
+          "style": {
+            "navigationBarTitleText": "",
+            "navigationStyle": "custom",
+            "disableScroll": true,
+            "app-plus": {
+              "bounce": "none"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+<template>
+	<view class="l-loading" :class="classes">
+		<!-- #ifndef APP-ANDROID || APP-IOS -->
+		<view class="l-loading__ball" v-if="type == 'ball'" :style="[spinnerStyle]"></view>
+		<view class="l-loading__circular" v-if="type == 'circular'" :style="[spinnerStyle]"></view>
+		<view class="l-loading__spinner" v-if="type == 'spinner'" :style="[spinnerStyle]">
+			<view class="l-loading__dot" v-for="item in 12" :key="item" :style="{'--l-loading-dot': item}"></view>
+		</view>
+		<!-- #endif -->
+		<!-- #ifdef APP-ANDROID || APP-IOS -->
+		<view class="l-loading__view" ref="loadingRef" :style="spinnerStyle"></view>
+		<!-- #endif -->
+		<text class="l-loading__text" v-if="$slots['default'] != null || text !=''" :style="textStyle">
+			<slot>{{text}}</slot>
+		</text>
+	</view>
+</template>
+<script lang="uts" setup>
+	// #ifdef APP
+	// import {useLoading} from './useLoading'
+	import {useLoading} from '@/uni_modules/lime-loading'
+	// #endif
+	
+	/**
+	 * LimeLoading 加载
+	 * @description 加载
+	 * @tutorial https://ext.dcloud.net.cn/plugin?name=lime-loading
+	 * @property {String} color loading颜色
+	 * @property {String} type loading类型，默认circular
+	 * @value circular 圆环
+	 * @value spinner  菊花
+	 * @property {String} size 尺寸
+	 * @property {String} text 文案 
+	 * @property {String} textColor 文案颜色
+	 * @property {String} textSize 文案字体大小 
+	 * @property {Boolean} vertical 是否垂直
+	 * @property {Boolean} inheritColor 是否继续颜色
+	 */
+	const name = 'l-loading'
+	defineOptions({
+		name: 'l-loading'
+	})
+	const props = defineProps({
+		color: {
+			type: String,
+			// #ifdef APP
+			default: '#1677ff' // '#c9c9c9'
+			// #endif
+		},
+		type: {
+			type: String,
+			default: 'circular'
+		},
+		size: {
+			type: String,
+			// #ifdef APP
+			default: '40rpx',
+			// #endif
+		},
+		text: {
+			type: String,
+			default: ''
+		},
+		textColor: {
+			type: String,
+			default: ''
+		},
+		textSize: {
+			type: String,
+			default: ''
+		},
+		vertical: {
+			type: Boolean,
+			default: false
+		},
+	})
+	
+	const classes = computed<Map<string,any>>(():Map<string,any> => {
+		const cls = new Map<string,any>()
+		cls.set(name + '--' + props.type, true)
+		if (props.vertical) {
+			cls.set('is-vertical', props.vertical)
+		} else {
+			cls.set('is-horizontal', !props.vertical)
+		}
+		return cls
+	})
+	
+	const spinnerStyle = computed<Map<string,any>>(():Map<string,any> => {
+		const style = new Map<string,any>()
+		style.set('width', props.size)
+		style.set('height', props.size)
+		// #ifndef APP
+		style.set('color', props.color)
+		// #endif
+		return style
+	})
+	
+	const textStyle = computed<Map<string,any>>(():Map<string,any> => {
+		const style = new Map<string,any>()
+		if (props.textColor !== '') {
+			style.set('color', props.textColor)
+		}
+		if (props.textSize !== '') {
+			style.set('font-size', props.textSize)
+		}
+		return style
+	})
+	// #ifdef APP
+	const loadingRef = ref<UniElement|null>(null)
+	// const {state, color} =  useLoading(loadingRef, props.type, props.color, 1)
+	const loading = useLoading(loadingRef)
+	loading.type = props.type;
+	loading.play()
+	// state.value = true
+	watchEffect(()=>{
+		if(props.color != ''){
+			// color.value = props.color
+			loading.color = props.color;
+		}
+	})
+	// #endif
+	
+</script>
+
+<style lang="scss">
+	@import './index-u.scss';
+</style>

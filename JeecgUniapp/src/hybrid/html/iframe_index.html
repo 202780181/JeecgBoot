@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JEECG BOOT</title>
+    <style type="text/css">
+
+        #iframe {
+            width: 100%;
+            z-index: 99;
+        }
+    </style>
+</head>
+<body>
+<iframe id="iframe" frameborder="0" ></iframe>
+
+<!-- uni 的 SDK -->
+<script type="text/javascript" src="https://js.cdn.aliyun.dcloud.net.cn/dev/uni-app/uni.webview.1.5.2.js"></script>
+
+<script type="text/javascript">
+    let mId;
+    document.addEventListener('UniAppJSBridgeReady', () => {
+        let {src,mid,height} = plus.webview.currentWebview();
+        let iframe = document.getElementById("iframe");
+        iframe.height = height;
+        document.getElementById("iframe").src=src;
+        mId=mid;
+    });
+
+    window.addEventListener('message', function(event) {
+
+        let { messageId, type, data } = event.data
+        if ( mId !== messageId) {
+            return
+        }
+        let dataString=JSON.stringify(data);
+
+        location.href = `callback?data=${escape(dataString)}&type=${escape(type)}`;
+    }, false)
+
+</script>
+</body>
+</html>
