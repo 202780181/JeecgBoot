@@ -87,6 +87,31 @@ class AppDebugResponse(BaseModel):
     spec: SpecGenerateResponse | None = None
 
 
+class AppChatStreamRequest(BaseModel):
+    app: AiAppConfig
+    input: str = Field(min_length=1)
+    conversation_id: str | None = None
+    topic_id: str | None = None
+    enable_search: bool = False
+    skill_ids: list[str] = Field(default_factory=list)
+    user_context: UserContext = Field(default_factory=UserContext)
+
+
+class ModelCredential(BaseModel):
+    api_key: str | None = None
+    secret_key: str | None = None
+    http_version_one: bool = False
+
+
+class ModelConfig(BaseModel):
+    id: str
+    provider: str | None = None
+    model_name: str
+    base_url: str
+    credential: ModelCredential = Field(default_factory=ModelCredential)
+    model_params: dict = Field(default_factory=dict)
+
+
 class TaskExecuteRequest(BaseModel):
     requirement: str = Field(min_length=2)
     executor: Optional[ExecutorName] = None

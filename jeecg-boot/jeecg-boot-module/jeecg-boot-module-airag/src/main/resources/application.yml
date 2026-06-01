@@ -62,6 +62,9 @@ spring:
     port: 6379
     password: 'res983'
 jeecg:
+  ai-orchestrator:
+    base-url: http://127.0.0.1:9100
+    timeout: 120000
   ai-rag:
     embed-store:
       host: "localhost"

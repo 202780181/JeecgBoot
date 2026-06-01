@@ -65,6 +65,11 @@ public class ChatSendParams {
     private Boolean enableSearch;
 
     /**
+     * 前端选择的 Skills
+     */
+    private List<String> skillIds;
+
+    /**
      * 是否开启深度思考
      */
     private Boolean enableThink;

@@ -16,6 +16,21 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload --port 9100
 ```
 
+## 环境变量
+
+```bash
+# JeecgBoot 后端地址
+JEECG_BASE_URL=http://localhost:8080/jeecg-boot
+
+# 和风天气，用于 weather 工具（城市搜索 + 3 天天气预报）
+# API Host 在和风天气控制台的项目配置中查看，不要继续使用已逐步停用的公共域名。
+QWEATHER_API_HOST=https://你的项目APIHost
+# 可选：如果你的 GeoAPI 和 Weather API Host 不同，再单独配置。
+QWEATHER_GEO_API_HOST=https://你的GeoAPIHost
+QWEATHER_API_KEY=你的和风天气项目 Key
+QWEATHER_TIMEOUT_SECONDS=15
+```
+
 ## API
 
 ```text

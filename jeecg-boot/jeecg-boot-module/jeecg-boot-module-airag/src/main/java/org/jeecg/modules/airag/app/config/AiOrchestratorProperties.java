@@ -8,6 +8,6 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "jeecg.ai-orchestrator")
 public class AiOrchestratorProperties {
-    private String baseUrl = "http://localhost:8000";
+    private String baseUrl = "http://127.0.0.1:9100";
     private int timeout = 120000;
 }

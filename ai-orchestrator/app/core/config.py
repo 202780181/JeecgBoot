@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     jeecg_base_url: str = "http://localhost:8080/jeecg-boot"
     jeecg_admin_token: Optional[str] = None
+    qweather_api_host: Optional[str] = None
+    qweather_geo_api_host: Optional[str] = None
+    qweather_api_key: Optional[str] = None
+    qweather_timeout_seconds: int = 15
     spec_workspace: str = ".spec-workspace"
     spec_kit_package: str = "git+https://github.com/github/spec-kit.git"
     spec_kit_timeout_seconds: int = 120

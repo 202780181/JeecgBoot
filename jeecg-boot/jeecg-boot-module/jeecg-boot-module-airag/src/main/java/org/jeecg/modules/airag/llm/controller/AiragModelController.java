@@ -34,6 +34,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Collections;
+import com.alibaba.fastjson.JSONObject;
 
 /**
  * @Description: AiRag模型配置
@@ -140,6 +141,28 @@ public class AiragModelController extends JeecgController<AiragModel, IAiragMode
             return Result.error("未找到对应数据");
         }
         return Result.OK(airagModel);
+    }
+
+    /**
+     * ai-orchestrator 读取模型调用配置。
+     */
+    @GetMapping(value = "/orchestrator/config")
+    public Result<JSONObject> queryOrchestratorConfig(@RequestParam(name = "id", required = true) String id) {
+        AiragModel airagModel = airagModelService.getById(id);
+        if (airagModel == null) {
+            return Result.error("未找到对应模型配置");
+        }
+        if (airagModel.getActivateFlag() == null || airagModel.getActivateFlag() != 1) {
+            return Result.error("模型未激活");
+        }
+        JSONObject result = new JSONObject();
+        result.put("id", airagModel.getId());
+        result.put("provider", airagModel.getProvider());
+        result.put("modelName", airagModel.getModelName());
+        result.put("baseUrl", airagModel.getBaseUrl());
+        result.put("credential", airagModel.getCredential());
+        result.put("modelParams", airagModel.getModelParams());
+        return Result.OK(result);
     }
 
     /**

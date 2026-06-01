@@ -20,6 +20,7 @@ import org.jeecg.modules.airag.app.service.IAiragChatService;
 import org.jeecg.modules.airag.app.vo.AiArticleWriteVersionVo;
 import org.jeecg.modules.airag.app.vo.AppDebugParams;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.jeecg.common.system.vo.DictModel;
 
 /**
@@ -197,9 +199,25 @@ public class AiragAppController extends JeecgController<AiragApp, IAiragAppServi
     /**
      * AI 应用开发页调试，代理到 ai-orchestrator。
      */
-    @PostMapping(value = "/orchestrator/debug")
-    public SseEmitter debugByOrchestrator(@RequestBody AppDebugParams appDebugParams, HttpServletRequest request) {
-        return aiOrchestratorService.debug(appDebugParams, request);
+    @PostMapping(value = "/orchestrator/debug", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public void debugByOrchestrator(@RequestBody AppDebugParams appDebugParams, HttpServletRequest request, HttpServletResponse response) {
+        aiOrchestratorService.debug(appDebugParams, request, response);
+    }
+
+    /**
+     * AI 应用开发页对话，纯代理 ai-orchestrator SSE。
+     */
+    @PostMapping(value = "/orchestrator/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public void chatByOrchestrator(@RequestBody AppDebugParams appDebugParams, HttpServletRequest request, HttpServletResponse response) {
+        aiOrchestratorService.chatStream(appDebugParams, request, response);
+    }
+
+    /**
+     * AI 应用开发页 Skills 列表，代理 ai-orchestrator。
+     */
+    @GetMapping(value = "/orchestrator/skills", produces = MediaType.APPLICATION_JSON_VALUE)
+    public String skillsByOrchestrator() {
+        return aiOrchestratorService.skills();
     }
 
     /**

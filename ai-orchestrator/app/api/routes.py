@@ -1,7 +1,9 @@
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from app.executors.dry_run import DryRunExecutor
 from app.models.schemas import (
+    AppChatStreamRequest,
     AppDebugRequest,
     AppDebugResponse,
     RequirementAnalysis,
@@ -12,7 +14,9 @@ from app.models.schemas import (
     TaskExecuteResponse,
 )
 from app.services.capability_router import KEYWORDS, analyze_requirement, select_executor
+from app.services.chat_service import ChatService
 from app.services.spec_service import generate_spec_with_speckit
+from app.skills import SkillRegistry
 
 router = APIRouter()
 
@@ -25,6 +29,16 @@ def health() -> dict[str, str]:
 @router.get("/api/capabilities")
 def capabilities() -> dict[str, list[str]]:
     return {executor.value: keywords for executor, keywords in KEYWORDS.items()}
+
+
+@router.get("/api/tools")
+def tools() -> dict[str, list[dict]]:
+    return {"tools": ChatService().tool_registry.openai_tools()}
+
+
+@router.get("/api/skills")
+def skills() -> dict[str, list[dict]]:
+    return {"skills": [skill.model_dump() for skill in SkillRegistry().list_skills()]}
 
 
 @router.post("/api/requirements/analyze", response_model=RequirementAnalysis)
@@ -57,8 +71,8 @@ def generate_spec(request: SpecGenerateRequest) -> SpecGenerateResponse:
 
 @router.post("/api/apps/debug", response_model=AppDebugResponse)
 def debug_app(request: AppDebugRequest) -> AppDebugResponse:
-    result = generate_spec(SpecGenerateRequest(requirement=request.input))
     app_name = request.app.name or request.app.id
+    result = generate_spec(SpecGenerateRequest(requirement=request.input))
     output = (
         f"我已收到「{app_name}」里的需求：{request.input}\n\n"
         "当前先按 AI 应用开发页的闭环处理：页面提交配置和消息，JeecgBoot 后端转发到 "
@@ -74,6 +88,18 @@ def debug_app(request: AppDebugRequest) -> AppDebugResponse:
         run_id=f"run-{abs(hash((request.app.id, request.input))) % 10_000_000}",
         output=output,
         spec=result,
+    )
+
+
+@router.post("/api/apps/chat/stream")
+async def chat_stream(request: AppChatStreamRequest) -> StreamingResponse:
+    return StreamingResponse(
+        ChatService().stream(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 

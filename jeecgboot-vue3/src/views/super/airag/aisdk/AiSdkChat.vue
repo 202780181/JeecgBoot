@@ -68,18 +68,128 @@
           <h2>AI 需求对话</h2>
           <p>基于 AI SDK Vue 的对话状态，优先调用 JeecgBoot 官方能力分析。</p>
         </div>
-        <div class="status-pill" :class="{ loading }">
-          <span></span>
-          {{ serviceStatusText }}
-        </div>
       </header>
 
       <main ref="messageBoxRef" class="message-list">
         <div v-for="message in chat.messages" :key="message.id" class="message-row" :class="message.role">
           <article class="message-bubble">
             <div v-if="message.role === 'assistant'" class="message-name">JeecgBoot AI 助手</div>
-            <div class="message-text">{{ getMessageText(message) }}</div>
-
+            <div v-if="message.role === 'user'" class="user-message-content">
+              <span v-for="skill in getMessageSkills(message)" :key="skill.id" class="message-skill-chip">
+                <span class="message-skill-icon">
+                  <Icon icon="ant-design:thunderbolt-filled" />
+                </span>
+                <span>{{ skill.name }}</span>
+              </span>
+              <span class="user-message-text">{{ getMessageText(message) }}</span>
+            </div>
+            <template v-else v-for="(part, partIndex) in getMessageParts(message)" :key="partIndex">
+              <VirtualMarkdownText
+                v-if="part.type === 'text' && part.text"
+                :text="part.text"
+                :streaming="part.state === 'streaming'"
+                :scroll-container="messageBoxRef"
+              />
+              <div v-else-if="part.type === 'data-thinking'" class="thinking-text" aria-live="polite">
+                正在思考
+              </div>
+              <div v-else-if="part.type === 'data-tool'" class="tool-card" :class="{ running: part.data.status === 'running' }">
+                <div class="tool-card-head">
+                  <span class="tool-card-icon">
+                    <Icon :icon="part.data.status === 'running' ? 'ant-design:loading-3-quarters-outlined' : 'ant-design:check-circle-filled'" />
+                  </span>
+                  <div>
+                    <strong>{{ part.data.title || part.data.toolName || '工具调用' }}</strong>
+                    <em>{{ part.data.status === 'running' ? '执行中' : '已完成' }}</em>
+                  </div>
+                </div>
+                <pre v-if="part.data.input || part.data.result" class="tool-card-payload">{{ formatToolPayload(part.data.result || part.data.input) }}</pre>
+              </div>
+              <div v-else-if="part.type === 'data-spec'" class="spec-card" :class="`status-${part.data.status}`">
+                <div class="spec-card-head">
+                  <span class="spec-card-icon">
+                    <Icon :icon="getSpecStatusIcon(part.data.status)" />
+                  </span>
+                  <div>
+                    <strong>{{ part.data.template || part.data.skillName || 'spec-kit' }}</strong>
+                    <em>{{ part.data.message }}</em>
+                  </div>
+                </div>
+                <div class="spec-steps">
+                  <div v-for="step in getSpecSteps(part.data)" :key="step.type" class="spec-step" :class="{ done: step.done, active: step.active }">
+                    <span class="spec-step-dot">
+                      <Icon v-if="step.done" icon="ant-design:check-outlined" />
+                    </span>
+                    <div>
+                      <strong>{{ step.title }}</strong>
+                      <em>{{ step.path || step.description }}</em>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="part.data.result?.featureDir || part.data.result?.taskCount" class="spec-card-foot">
+                  <span v-if="part.data.result?.taskCount">任务 {{ part.data.result.taskCount }} 个</span>
+                  <span v-if="part.data.result?.source">来源 {{ part.data.result.source }}</span>
+                  <span v-if="part.data.result?.featureDir">{{ part.data.result.featureDir }}</span>
+                </div>
+              </div>
+              <div v-else-if="part.type === 'data-weather'" class="weather-card" :class="getWeatherSceneClass(part.data)">
+                <div class="weather-scene" aria-hidden="true">
+                  <span class="weather-scene-layer layer-a"></span>
+                  <span class="weather-scene-layer layer-b"></span>
+                  <span class="weather-scene-layer layer-c"></span>
+                </div>
+                <div class="weather-card-main">
+                  <div class="weather-place">
+                    <span>{{ part.data.city || '当前城市' }}</span>
+                    <em>{{ part.data.adm2 || part.data.adm1 || '我的位置' }}</em>
+                  </div>
+                  <div class="weather-temp">
+                    <span>{{ formatWeatherTemperature(part.data) }}</span>
+                  </div>
+                </div>
+                <div class="weather-summary">
+                  <div class="weather-alert">
+                    <Icon icon="ant-design:warning-filled" />
+                    <span>{{ part.data.weather || '天气预报' }}</span>
+                  </div>
+                  <div class="weather-range">
+                    <span>最高 {{ part.data.high || '未知' }}</span>
+                    <span>最低 {{ part.data.low || '未知' }}</span>
+                  </div>
+                </div>
+                <div class="weather-metrics">
+                  <div>
+                    <span>湿度</span>
+                    <strong>{{ part.data.humidity || '未知' }}</strong>
+                  </div>
+                  <div>
+                    <span>降水</span>
+                    <strong>{{ part.data.precip || '未知' }}</strong>
+                  </div>
+                  <div>
+                    <span>风力</span>
+                    <strong>{{ part.data.wind || '未知' }}</strong>
+                  </div>
+                  <div>
+                    <span>紫外线</span>
+                    <strong>{{ part.data.uvIndex || '未知' }}</strong>
+                  </div>
+                </div>
+                <div v-if="part.data.daily?.length" class="weather-forecast">
+                  <div v-for="item in part.data.daily" :key="item.date" class="weather-day">
+                    <span>{{ formatWeatherDate(item.date) }}</span>
+                    <Icon class="weather-day-icon" :icon="getWeatherIcon(item)" />
+                    <em>{{ item.weather }}</em>
+                    <strong>{{ item.low }} / {{ item.high }}</strong>
+                  </div>
+                </div>
+                <div class="weather-footer">
+                  <span>日出 {{ part.data.sunrise || '未知' }}</span>
+                  <span>日落 {{ part.data.sunset || '未知' }}</span>
+                  <a v-if="part.data.fxLink" :href="part.data.fxLink" target="_blank" rel="noopener noreferrer">和风天气</a>
+                </div>
+              </div>
+            </template>
           </article>
         </div>
       </main>
@@ -100,6 +210,16 @@
                 <Icon icon="ant-design:close-outlined" />
               </button>
             </div>
+          </div>
+
+          <div v-if="selectedSkills.length" class="selected-skills">
+            <button v-for="skill in selectedSkills" :key="skill.id" type="button" @click="removeSkill(skill.id)">
+              <span class="skill-chip-action" aria-hidden="true">
+                <Icon class="skill-chip-default-icon" icon="ant-design:thunderbolt-filled" />
+                <Icon class="skill-chip-close-icon" icon="ant-design:close-outlined" />
+              </span>
+              <span>{{ skill.name }}</span>
+            </button>
           </div>
 
           <div
@@ -125,10 +245,10 @@
                     v-if="addMenuOpen"
                     as="div"
                     class="add-menu"
-                    :initial="{ opacity: 0, scale: 0.96, y: 8 }"
-                    :animate="{ opacity: 1, scale: 1, y: 0 }"
-                    :exit="{ opacity: 0, scale: 0.96, y: 8 }"
-                    :transition="{ duration: 0.16, ease: 'easeOut' }"
+                    :initial="composerPopupMotion.initial"
+                    :animate="composerPopupMotion.animate"
+                    :exit="composerPopupMotion.exit"
+                    :transition="composerPopupMotion.transition"
                   >
                     <button type="button" @click="openFilePicker('file')">
                       <Icon icon="ant-design:paper-clip-outlined" />
@@ -165,14 +285,40 @@
                     v-if="skillsMenuOpen"
                     as="div"
                     class="skills-panel"
-                    :initial="{ opacity: 0, scale: 0.98, y: 10 }"
-                    :animate="{ opacity: 1, scale: 1, y: 0 }"
-                    :exit="{ opacity: 0, scale: 0.98, y: 10 }"
-                    :transition="{ duration: 0.18, ease: 'easeOut' }"
+                    :initial="composerPopupMotion.initial"
+                    :animate="composerPopupMotion.animate"
+                    :exit="composerPopupMotion.exit"
+                    :transition="composerPopupMotion.transition"
                   >
                     <h3>Skills</h3>
-                    <div class="skills-empty">
-                      暂无技能
+                    <div v-if="skillCategories.length > 1" class="skills-categories">
+                      <button
+                        v-for="category in skillCategories"
+                        :key="category"
+                        type="button"
+                        :class="{ active: activeSkillCategory === category }"
+                        @click="activeSkillCategory = category"
+                      >
+                        {{ category }}
+                      </button>
+                    </div>
+                    <div v-if="skillsLoading" class="skills-empty">加载中</div>
+                    <div v-else-if="!filteredSkillOptions.length" class="skills-empty">暂无技能</div>
+                    <div v-else class="skills-list">
+                      <button
+                        v-for="skill in filteredSkillOptions"
+                        :key="skill.id"
+                        type="button"
+                        class="skill-option"
+                        :class="{ active: selectedSkillIds.includes(skill.id) }"
+                        @click="toggleSkill(skill.id)"
+                      >
+                        <span>
+                          <strong>{{ skill.name }}</strong>
+                          <em>{{ skill.description }}</em>
+                        </span>
+                        <Icon v-if="selectedSkillIds.includes(skill.id)" icon="ant-design:check-circle-filled" />
+                      </button>
                     </div>
                   </Motion>
                 </AnimatePresence>
@@ -195,10 +341,10 @@
                     v-if="modelMenuOpen"
                     as="div"
                     class="model-menu"
-                    :initial="{ opacity: 0, scale: 0.96, y: 8 }"
-                    :animate="{ opacity: 1, scale: 1, y: 0 }"
-                    :exit="{ opacity: 0, scale: 0.96, y: 8 }"
-                    :transition="{ duration: 0.16, ease: 'easeOut' }"
+                    :initial="composerPopupMotion.initial"
+                    :animate="composerPopupMotion.animate"
+                    :exit="composerPopupMotion.exit"
+                    :transition="composerPopupMotion.transition"
                   >
                     <button
                       v-for="model in modelOptions"
@@ -233,46 +379,29 @@
 </template>
 
 <script setup lang="ts">
-import type { UIMessage } from 'ai';
-import { Chat } from '@ai-sdk/vue';
-import { AnimatePresence, Motion } from 'motion-v';
+import { AnimatePresence, Motion, type $Transition } from 'motion-v';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import Icon from '@/components/Icon';
 import { usePageContext } from '@/hooks/component/usePageContext';
 import { useMessage } from '@/hooks/web/useMessage';
 import { useUserStore } from '@/store/modules/user';
-import { debugAssistant, getActiveLlmModels, type AiModelOption } from './AiSdkChat.api';
-
-const AI_SDK_SESSION_TYPE = 'ai-sdk-dev';
-
-function createWelcomeMessage(): UIMessage {
-  return {
-    id: 'welcome',
-    role: 'assistant',
-    parts: [
-      {
-        type: 'text',
-        text: [
-          '您好！我是 JeecgBoot AI 助手，',
-          '请描述您的业务需求，我会帮您判断是否可以使用 JeecgBoot 官方能力，',
-          '例如：Online 表单、报表、BPMN、Codegen 或 Admin API。',
-        ].join('\n'),
-      },
-    ],
-  } as UIMessage;
-}
-
-const chat = new Chat<UIMessage>({
-  messages: [createWelcomeMessage()],
-});
-
-interface AiSdkHistoryItem {
-  id: string;
-  title: string;
-  updatedAt: number;
-  messages: UIMessage[];
-  sessionType: typeof AI_SDK_SESSION_TYPE;
-}
+import { debugAssistant, getOrchestratorSkills, type AiSkillOption } from './AiSdkChat.api';
+import { 
+  cloneMessages, 
+  createConversationId, 
+  getConversationTitle, 
+  loadHistoryItemsFromStorage, 
+  saveHistoryItemsToStorage 
+} from './historyStore';
+import { AI_SDK_SESSION_TYPE, type AiSdkHistoryItem, type AiSdkMessageSkill, type AiSdkSpecData, type AiSdkUIMessage } from './types';
+import { useAiSdkChatMessages } from './useAiSdkChatMessages';
+import { useAiSdkModels } from './useAiSdkModels';
+import { useAiSdkStreamRenderer } from './useAiSdkStreamRenderer';
+import { useAutoScroll } from './useAutoScroll';
+import { useComposerAttachments } from './useComposerAttachments';
+import VirtualMarkdownText from './VirtualMarkdownText.vue';
+// @ts-ignore
+import { formatWeatherDate, formatWeatherTemperature, getWeatherIcon, getWeatherSceneClass } from './weather';
 
 const input = ref('');
 const loading = ref(false);
@@ -280,9 +409,6 @@ const historyItems = ref<AiSdkHistoryItem[]>([]);
 const activeConversationId = ref('');
 const editingHistoryId = ref('');
 const editingHistoryTitle = ref('');
-const modelOptions = ref<AiModelOption[]>([]);
-const selectedModelId = ref('');
-const modelLoading = ref(false);
 const messageBoxRef = ref<HTMLElement>();
 const composerRef = ref<HTMLElement>();
 const historyTitleInputRef = ref<HTMLInputElement | null>(null);
@@ -290,119 +416,201 @@ const fileInputRef = ref<HTMLInputElement>();
 const addMenuWrapRef = ref<HTMLElement>();
 const skillsMenuWrapRef = ref<HTMLElement>();
 const modelMenuWrapRef = ref<HTMLElement>();
-const { createMessage } = useMessage();
-const pageContext = usePageContext();
-const userStore = useUserStore();
-
-interface ComposerAttachment {
-  id: string;
-  name: string;
-  size: number;
-  type: string;
-  file: File;
-  previewUrl?: string;
-}
-
-const attachments = ref<ComposerAttachment[]>([]);
 const addMenuOpen = ref(false);
 const skillsMenuOpen = ref(false);
 const modelMenuOpen = ref(false);
+const skillsLoading = ref(false);
+const activeSkillCategory = ref('全部');
 const webSearchEnabled = ref(false);
 const fileInputAccept = ref('');
+const skillOptions = ref<AiSkillOption[]>([]);
+const selectedSkillIds = ref<string[]>([]);
+const composerPopupTransition: $Transition = {
+  duration: 0.18,
+  ease: [0.22, 1, 0.36, 1],
+};
+const composerPopupMotion = {
+  initial: {
+    opacity: 0,
+    scale: 0.96,
+    y: 10,
+    filter: 'blur(8px)',
+  },
+  animate: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    filter: 'blur(0px)',
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.96,
+    y: 10,
+    filter: 'blur(8px)',
+  },
+  transition: composerPopupTransition,
+};
+
+const { createMessage } = useMessage();
+const pageContext = usePageContext();
+const userStore = useUserStore();
+const { scrollToBottom, scheduleScrollToBottom } = useAutoScroll(messageBoxRef);
+const { attachments, addAttachments, clearAttachments, formatFileSize, removeAttachment } = useComposerAttachments();
+const { 
+  addMessage, 
+  addThinkingMessage, 
+  appendSpecPart,
+  appendToolPart,
+  appendWeatherPart, 
+  chat, 
+  clearMessages: clearChatMessages, 
+  finishMessage,
+  getMessageParts, 
+  getMessageText, 
+  updateMessage 
+} = useAiSdkChatMessages({ scheduleScrollToBottom });
+const { 
+  loadActiveLlmModels,
+   modelLoading, 
+   modelOptions, 
+   selectModel: setSelectedModel, 
+   selectedModelId, 
+   selectedModelLabel
+   } = useAiSdkModels({
+  onError: (message) => createMessage.warning(message),
+});
+const { renderAssistantStream } = useAiSdkStreamRenderer({
+  appendSpecPart,
+  appendToolPart,
+  appendWeatherPart,
+  finishMessage,
+  updateMessage,
+});
 
 const historyStorageKey = computed(() => {
   const username = userStore.getUserInfo?.username || userStore.getUserInfo?.id || 'anonymous';
   return `jeecg:airag:chat:${username}:${AI_SDK_SESSION_TYPE}:history`;
 });
-const serviceStatusText = computed(() => (loading.value ? '处理中' : '在线'));
 const pageHeight = computed(() => Math.max((pageContext.contentHeight?.value || window.innerHeight) - 1, 560));
-const latestAssistantId = computed(() => {
-  const assistants = chat.messages.filter((message) => message.role === 'assistant');
-  return assistants[assistants.length - 1]?.id;
+const selectedSkills = computed(() => skillOptions.value.filter((skill) => selectedSkillIds.value.includes(skill.id)));
+const skillCategories = computed(() => {
+  const categories = skillOptions.value.map((skill) => skill.category || '通用');
+  return ['全部', ...Array.from(new Set(categories))];
 });
-const selectedModelLabel = computed(() => {
-  if (modelLoading.value) return '加载模型';
-  return modelOptions.value.find((model) => model.id === selectedModelId.value)?.displayName || '默认模型';
+const filteredSkillOptions = computed(() => {
+  return skillOptions.value.filter((skill) => {
+    return activeSkillCategory.value === '全部' || (skill.category || '通用') === activeSkillCategory.value;
+  });
 });
 
-async function loadActiveLlmModels() {
-  modelLoading.value = true;
-  try {
-    const res = await getActiveLlmModels();
-    const records = res?.result?.records || res?.records || [];
-    modelOptions.value = Array.isArray(records)
-      ? records.map((model) => ({
-          id: model.id,
-          name: model.name || model.modelName || '未命名模型',
-          displayName: model.modelName || model.name || '未命名模型',
-          provider: model.provider,
-          modelName: model.modelName,
-          modelType: model.modelType,
-          activateFlag: model.activateFlag,
-        }))
-      : [];
-    if (!selectedModelId.value && modelOptions.value.length) {
-      selectedModelId.value = modelOptions.value[0].id;
-    }
-  } catch (error: any) {
-    modelOptions.value = [];
-    createMessage.warning(error?.message || 'AI 模型配置读取失败');
-  } finally {
-    modelLoading.value = false;
-  }
-}
-
-function getMessageText(message: UIMessage) {
-  return message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('');
-}
-
-function addMessage(role: 'user' | 'assistant', text: string) {
-  const id = `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  chat.messages = [
-    ...chat.messages,
-    {
-      id,
-      role,
-      parts: [{ type: 'text', text }],
-    } as UIMessage,
-  ];
-  return id;
-}
-
-function updateMessage(id: string, text: string) {
-  chat.messages = chat.messages.map((message) =>
-    message.id === id
-      ? ({
-          ...message,
-          parts: [{ type: 'text', text }],
-        } as UIMessage)
-      : message
-  );
-}
-
-function createConversationId() {
-  return `${AI_SDK_SESSION_TYPE}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getConversationTitle(requirement: string) {
-  const text = requirement.replace(/\s+/g, ' ').trim();
-  return text.length > 18 ? `${text.slice(0, 18)}...` : text || '新建对话';
+function getMessageSkills(message: AiSdkUIMessage): AiSdkMessageSkill[] {
+  const skills = message.metadata?.skills;
+  return Array.isArray(skills) ? skills.filter((skill) => skill?.id && skill?.name) : [];
 }
 
 function loadHistoryItems() {
-  try {
-    const raw = localStorage.getItem(historyStorageKey.value);
-    const list = raw ? JSON.parse(raw) : [];
-    historyItems.value = Array.isArray(list)
-      ? list.filter((item) => item?.sessionType === AI_SDK_SESSION_TYPE && item?.id && Array.isArray(item?.messages))
-      : [];
-  } catch {
-    historyItems.value = [];
-  }
+  historyItems.value = loadHistoryItemsFromStorage(historyStorageKey.value);
 }
 
 function saveHistoryItems() {
-  localStorage.setItem(historyStorageKey.value, JSON.stringify(historyItems.value));
+  saveHistoryItemsToStorage(historyStorageKey.value, historyItems.value);
+}
+
+function formatToolPayload(value: unknown) {
+  if (!value) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function getSpecStatusIcon(status: string) {
+  if (status === 'failed') return 'ant-design:close-circle-filled';
+  if (status === 'completed') return 'ant-design:check-circle-filled';
+  return 'ant-design:loading-3-quarters-outlined';
+}
+
+function getSpecSteps(data: AiSdkSpecData) {
+  const artifacts = data.artifacts || [];
+  const artifactMap = new Map(artifacts.map((artifact) => [artifact.type, artifact]));
+  const stageOrder = ['start', 'spec', 'plan', 'tasks', 'completed'];
+  const activeIndex = Math.max(0, stageOrder.indexOf(data.stage));
+  return [
+    {
+      type: 'spec',
+      title: 'Spec',
+      description: '需求规格',
+    },
+    {
+      type: 'plan',
+      title: 'Plan',
+      description: '实现计划',
+    },
+    {
+      type: 'tasks',
+      title: 'Tasks',
+      description: '任务拆分',
+    },
+  ].map((step) => {
+    const artifact = artifactMap.get(step.type);
+    const stepIndex = stageOrder.indexOf(step.type);
+    return {
+      ...step,
+      path: artifact?.path || '',
+      done: !!artifact || data.stage === 'completed',
+      active: !artifact && activeIndex === stepIndex,
+    };
+  });
+}
+
+async function loadSkills() {
+  skillsLoading.value = true;
+  try {
+    const res = await getOrchestratorSkills();
+    const skills = res?.skills || res?.result?.skills || [];
+    skillOptions.value = Array.isArray(skills)
+      ? skills.map((skill) => ({
+          id: skill.id,
+          name: skill.name || skill.id,
+          description: skill.description || '',
+          category: skill.category || '通用',
+        }))
+      : [];
+  } catch (error: any) {
+    createMessage.warning(error?.message || 'Skills 加载失败');
+    skillOptions.value = [];
+  } finally {
+    skillsLoading.value = false;
+  }
+}
+
+function toggleSkill(skillId: string) {
+  const skill = skillOptions.value.find((item) => item.id === skillId);
+  if (!skill) return;
+  setSelectedSkillIds(selectedSkillIds.value.includes(skillId) ? [] : [skillId]);
+}
+
+function removeSkill(skillId: string) {
+  setSelectedSkillIds(selectedSkillIds.value.filter((id) => id !== skillId));
+}
+
+function setSelectedSkillIds(skillIds: string[]) {
+  selectedSkillIds.value = skillIds.slice(0, 1);
+  syncActiveConversationSkills();
+}
+
+function syncActiveConversationSkills() {
+  if (!activeConversationId.value) return;
+  let changed = false;
+  historyItems.value = historyItems.value.map((item) => {
+    if (item.id !== activeConversationId.value) return item;
+    changed = true;
+    return { ...item, skillIds: [...selectedSkillIds.value], updatedAt: Date.now() };
+  });
+  if (changed) {
+    saveHistoryItems();
+  }
 }
 
 function persistActiveConversation(titleSeed?: string) {
@@ -417,7 +625,8 @@ function persistActiveConversation(titleSeed?: string) {
     id,
     title: existed?.title || getConversationTitle(titleSeed || (firstUserMessage ? getMessageText(firstUserMessage) : '')),
     updatedAt: Date.now(),
-    messages: JSON.parse(JSON.stringify(chat.messages)),
+    messages: cloneMessages(chat.messages),
+    skillIds: [...selectedSkillIds.value],
     sessionType: AI_SDK_SESSION_TYPE,
   };
   historyItems.value = [item, ...historyItems.value.filter((history) => history.id !== id)];
@@ -433,7 +642,8 @@ async function loadConversation(id: string) {
   skillsMenuOpen.value = false;
   clearComposer();
   clearAttachments();
-  chat.messages = target.messages?.length ? JSON.parse(JSON.stringify(target.messages)) : [createWelcomeMessage()];
+  selectedSkillIds.value = Array.isArray(target.skillIds) ? target.skillIds.slice(0, 1) : [];
+  chat.messages = target.messages?.length ? cloneMessages(target.messages) : [];
   await scrollToBottom();
 }
 
@@ -486,13 +696,6 @@ async function deleteHistoryItem(id: string) {
   startNewConversation();
 }
 
-async function scrollToBottom() {
-  await nextTick();
-  if (messageBoxRef.value) {
-    messageBoxRef.value.scrollTop = messageBoxRef.value.scrollHeight;
-  }
-}
-
 function syncComposerText() {
   input.value = composerRef.value?.innerText.replace(/\u00a0/g, ' ').trim() || '';
 }
@@ -502,41 +705,6 @@ function clearComposer() {
   if (composerRef.value) {
     composerRef.value.innerText = '';
   }
-}
-
-function clearAttachments() {
-  attachments.value.forEach((file) => {
-    if (file.previewUrl) {
-      URL.revokeObjectURL(file.previewUrl);
-    }
-  });
-  attachments.value = [];
-}
-
-function addAttachments(files: FileList | File[]) {
-  const nextFiles = Array.from(files).map((file) => ({
-    id: `${file.name}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    file,
-    previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-  }));
-  attachments.value = [...attachments.value, ...nextFiles];
-}
-
-function removeAttachment(id: string) {
-  const target = attachments.value.find((file) => file.id === id);
-  if (target?.previewUrl) {
-    URL.revokeObjectURL(target.previewUrl);
-  }
-  attachments.value = attachments.value.filter((file) => file.id !== id);
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function toggleAddMenu() {
@@ -565,7 +733,7 @@ function toggleModelMenu() {
 }
 
 function selectModel(id: string) {
-  selectedModelId.value = id;
+  setSelectedModel(id);
   modelMenuOpen.value = false;
 }
 
@@ -619,6 +787,14 @@ function handleComposerPaste(event: ClipboardEvent) {
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {
+  if ((event.key === 'Backspace' || event.key === 'Delete') && !event.isComposing) {
+    syncComposerText();
+    if (!input.value && selectedSkillIds.value.length) {
+      event.preventDefault();
+      setSelectedSkillIds(selectedSkillIds.value.slice(0, -1));
+      return;
+    }
+  }
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   sendRequirement();
@@ -630,12 +806,16 @@ async function sendRequirement() {
   if (!requirement || loading.value) return;
 
   clearComposer();
-  addMessage('user', requirement);
+  const sentSkillIds = [...selectedSkillIds.value];
+  const sentSkills = selectedSkills.value.map((skill) => ({ id: skill.id, name: skill.name }));
+  setSelectedSkillIds([]);
+  skillsMenuOpen.value = false;
+  addMessage('user', requirement, sentSkills.length ? { skills: sentSkills } : undefined);
   loading.value = true;
   await scrollToBottom();
 
+  const assistantId = addThinkingMessage();
   try {
-    const assistantId = addMessage('assistant', '思考中...');
     const stream = await debugAssistant({
       content: requirement,
       app: {
@@ -644,15 +824,17 @@ async function sendRequirement() {
         type: 'chatSimple',
         prompt: '你是 JeecgBoot AI 应用开发助手，请结合用户需求给出可执行的开发建议。',
         modelId: selectedModelId.value,
+        model_id: selectedModelId.value,
       },
       responseMode: 'streaming',
       enableSearch: webSearchEnabled.value,
+      skillIds: sentSkillIds,
       sessionType: AI_SDK_SESSION_TYPE,
     });
     await renderAssistantStream(stream, assistantId);
   } catch (error: any) {
     createMessage.error(error?.message || 'AI Orchestrator 服务调用失败');
-    addMessage('assistant', '调用 AI Orchestrator 失败，请确认 Python 服务已在 9100 端口启动。');
+    updateMessage(assistantId, '调用 AI Orchestrator 失败，请确认 Python 服务已启动，并检查 JeecgBoot 的 ai-orchestrator 地址配置。');
   } finally {
     persistActiveConversation(requirement);
     loading.value = false;
@@ -660,47 +842,10 @@ async function sendRequirement() {
   }
 }
 
-async function renderAssistantStream(readableStream: ReadableStream<Uint8Array>, assistantId: string) {
-  const reader = readableStream.getReader();
-  const decoder = new TextDecoder('UTF-8');
-  let buffer = '';
-  let text = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() || '';
-
-    for (const part of parts) {
-      const content = part.startsWith('data:') ? part.replace('data:', '').trim() : part.trim();
-      if (!content) continue;
-      try {
-        const event = JSON.parse(content);
-        if (event.event === 'MESSAGE') {
-          text += event.data?.message || '';
-          updateMessage(assistantId, text || '思考中...');
-        }
-        if (event.event === 'ERROR') {
-          updateMessage(assistantId, event.data?.message || '调用 AI Orchestrator 失败');
-        }
-      } catch (error) {
-        console.log('AI SDK stream parse failed:', error);
-      }
-    }
-  }
-}
-
-function handleEnter(event: KeyboardEvent) {
-  if (event.shiftKey) return;
-  event.preventDefault();
-  sendRequirement();
-}
-
 function clearMessages() {
-  chat.messages = chat.messages.slice(0, 1);
+  clearChatMessages();
   clearAttachments();
+  setSelectedSkillIds([]);
   addMenuOpen.value = false;
   skillsMenuOpen.value = false;
   modelMenuOpen.value = false;
@@ -710,12 +855,12 @@ function clearMessages() {
 function startNewConversation() {
   activeConversationId.value = '';
   clearMessages();
-  chat.messages = [createWelcomeMessage()];
 }
 
 onMounted(() => {
   loadHistoryItems();
   loadActiveLlmModels();
+  loadSkills();
   if (historyItems.value.length) {
     loadConversation(historyItems.value[0].id);
   }
