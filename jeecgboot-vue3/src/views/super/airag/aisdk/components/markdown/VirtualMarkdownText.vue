@@ -37,8 +37,8 @@ export default defineComponent({
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { renderStreamMarkdown } from './streamMarkdown';
-import { createVirtualMarkdownBlocks } from './virtualMarkdown';
+import { renderStreamMarkdown } from '../../utils/streamMarkdown';
+import { createVirtualMarkdownBlocks } from '../../utils/virtualMarkdown';
 
 const VIRTUAL_BLOCK_THRESHOLD = 80;
 const OVERSCAN_BLOCKS = 8;

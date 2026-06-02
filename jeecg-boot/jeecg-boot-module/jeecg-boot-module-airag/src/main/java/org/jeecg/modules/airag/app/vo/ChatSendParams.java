@@ -70,6 +70,11 @@ public class ChatSendParams {
     private List<String> skillIds;
 
     /**
+     * 前端传入的会话上下文消息
+     */
+    private List<Map<String, Object>> messages;
+
+    /**
      * 是否开启深度思考
      */
     private Boolean enableThink;

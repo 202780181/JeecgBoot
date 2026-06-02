@@ -8,8 +8,10 @@ from app.models.schemas import AiAppConfig, AppChatStreamRequest, ModelConfig, M
 from app.services.chat_service import ChatService
 from app.services.spec_service import SpecKitResult
 from app.skills import SkillRegistry
+from app.skills.base import SkillSpec
 from app.tools import ToolRegistry
 from app.tools.weather import WeatherTool
+from app.tools.web_search import WebSearchTool
 
 
 class FakeJeecgClient:
@@ -56,9 +58,29 @@ class FakeToolCallingChatService(ChatService):
         yield "广州天气已查询完成。"
 
 
+class FakeWebSearchChatService(ChatService):
+    async def _stream_complete(self, model, request, messages, use_tools=False):
+        if use_tools:
+            yield {
+                "id": "call-search-1",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": json.dumps({"query": "JeecgBoot 最新版本"}, ensure_ascii=False),
+                },
+            }
+            return
+        yield "已根据搜索结果总结。"
+
+
 class FailingJeecgClient:
     async def get_model_config(self, model_id, user_context):
         raise ValueError("请选择 AI 模型")
+
+
+class UnexpectedJeecgClient:
+    async def get_model_config(self, model_id, user_context):
+        raise AssertionError("skill validation should run before model config lookup")
 
 
 def collect_stream(service: ChatService, request: AppChatStreamRequest) -> list[str]:
@@ -110,13 +132,36 @@ def test_chat_stream_success_events():
     assert parsed_events[-1]["event"] == "MESSAGE_END"
 
 
+def test_initial_messages_include_context_history():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="我刚才选的 skills 有哪些内容？",
+        messages=[
+            {"role": "user", "content": "我选择了 jeecgboot-uniapp-template skill"},
+            {"role": "assistant", "content": "这个 skill 会生成 Spec / Plan / Tasks。"},
+        ],
+    )
+
+    messages = ChatService(FakeJeecgClient())._initial_messages(request)
+
+    assert messages == [
+        {"role": "system", "content": "你是 JeecgBoot AI 应用开发助手。请直接、准确地回答用户问题。"},
+        {"role": "user", "content": "我选择了 jeecgboot-uniapp-template skill"},
+        {"role": "assistant", "content": "这个 skill 会生成 Spec / Plan / Tasks。"},
+        {"role": "user", "content": "我刚才选的 skills 有哪些内容？"},
+    ]
+
+
 def test_tool_registry_exposes_openai_tools():
     registry = ToolRegistry()
     tools = registry.openai_tools()
+    tool_names = [tool["function"]["name"] for tool in tools]
 
     assert tools[0]["type"] == "function"
-    assert tools[0]["function"]["name"] == "weather"
-    assert tools[0]["function"]["parameters"]["required"] == ["city"]
+    assert "weather" in tool_names
+    assert "web_search" in tool_names
+    weather_tool = next(tool for tool in tools if tool["function"]["name"] == "weather")
+    assert weather_tool["function"]["parameters"]["required"] == ["city"]
 
 
 def test_skill_registry_lists_builtin_skills():
@@ -163,9 +208,12 @@ def test_chat_stream_selected_skill_event_and_prompt():
 def test_skill_limits_available_tools():
     service = ChatService(FakeJeecgClient())
 
-    assert service._available_tool_names(None) is None
+    assert service._available_tool_names(None) == ["weather"]
+    assert service._available_tool_names(None, enable_search=True) == ["weather", "web_search"]
     assert service._available_tool_names(["jeecgboot-dev"]) == ["weather"]
+    assert service._available_tool_names(["jeecgboot-dev"], enable_search=True) == ["weather", "web_search"]
     assert service._available_tool_names(["jeecgboot-uniapp-template"]) == []
+    assert service._available_tool_names(["jeecgboot-uniapp-template"], enable_search=True) == []
 
 
 def test_model_request_filters_tools_by_skill():
@@ -193,6 +241,34 @@ def test_model_request_filters_tools_by_skill():
     assert "tools" not in payload
 
 
+def test_model_request_exposes_web_search_only_when_enabled():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="查询 JeecgBoot 最新版本",
+        enable_search=True,
+    )
+    service = ChatService(FakeJeecgClient())
+    model = ModelConfig(
+        id="model-1",
+        model_name="test-model",
+        base_url="https://example.com/v1",
+        credential=ModelCredential(api_key="test-key"),
+    )
+
+    payload, *_ = service._build_model_request(
+        model,
+        request,
+        stream=True,
+        messages=service._initial_messages(request),
+        use_tools=True,
+    )
+    tool_names = [tool["function"]["name"] for tool in payload["tools"]]
+
+    assert "web_search" in tool_names
+    assert "extra_body" not in payload
+    assert "联网搜索已开启" in service._initial_messages(request)[0]["content"]
+
+
 def test_chat_stream_error_event():
     request = AppChatStreamRequest(
         app=AiAppConfig(id="ai-sdk-dev"),
@@ -205,6 +281,62 @@ def test_chat_stream_error_event():
     assert parsed_events[0]["event"] == "INIT_REQUEST_ID"
     assert parsed_events[-1]["event"] == "ERROR"
     assert "请选择 AI 模型" in parsed_events[-1]["data"]["message"]
+
+
+def test_unknown_skill_returns_structured_error_before_model_lookup():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="你好",
+        skill_ids=["missing-skill"],
+    )
+
+    events = collect_stream(ChatService(UnexpectedJeecgClient()), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert parsed_events[-1]["data"]["code"] == "SKILL_NOT_FOUND"
+    assert parsed_events[-1]["data"]["skillIds"] == ["missing-skill"]
+    assert "Skill 不存在或未注册" in parsed_events[-1]["data"]["message"]
+
+
+def test_conflicting_single_skill_returns_structured_error():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="开发一个页面",
+        skill_ids=["jeecgboot-dev", "jeecgboot-uniapp-template"],
+    )
+
+    events = collect_stream(ChatService(UnexpectedJeecgClient()), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert parsed_events[-1]["data"]["code"] == "SKILL_CONFLICT"
+    assert parsed_events[-1]["data"]["skillIds"] == ["jeecgboot-dev", "jeecgboot-uniapp-template"]
+    assert "互斥" in parsed_events[-1]["data"]["message"]
+
+
+def test_skill_missing_tool_dependency_returns_structured_error():
+    registry = SkillRegistry()
+    registry._skills["broken-skill"] = SkillSpec(
+        id="broken-skill",
+        name="Broken Skill",
+        description="测试缺失工具依赖",
+        instruction="测试",
+        default_tool_names=["missing-tool"],
+    )
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="你好",
+        skill_ids=["broken-skill"],
+    )
+
+    events = collect_stream(ChatService(UnexpectedJeecgClient(), skill_registry=registry), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert parsed_events[-1]["data"]["code"] == "SKILL_TOOL_UNAVAILABLE"
+    assert parsed_events[-1]["data"]["skillIds"] == ["broken-skill"]
+    assert parsed_events[-1]["data"]["toolNames"] == ["missing-tool"]
 
 
 def test_weather_tool_stream_events():
@@ -355,6 +487,71 @@ def test_weather_tool_missing_key_returns_error_event():
     assert parsed_events[1]["event"] == "TOOL_CALL"
     assert parsed_events[-1]["event"] == "ERROR"
     assert "QWEATHER_API_HOST" in parsed_events[-1]["data"]["message"] or "QWEATHER_API_KEY" in parsed_events[-1]["data"]["message"]
+
+
+def test_web_search_tool_stream_events():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev"),
+        input="JeecgBoot 最新版本是什么",
+        enable_search=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/html/"
+        return httpx.Response(
+            200,
+            text="""
+            <html><body>
+              <a rel="nofollow" class="result__a" href="https://www.jeecg.com">JeecgBoot 官网</a>
+              <a class="result__snippet">JeecgBoot 低代码开发平台。</a>
+            </body></html>
+            """,
+        )
+
+    registry = ToolRegistry()
+    registry._tools["web_search"] = WebSearchTool(transport=httpx.MockTransport(handler))
+
+    events = collect_stream(FakeWebSearchChatService(FakeJeecgClient(), registry), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == [
+        "INIT_REQUEST_ID",
+        "TOOL_CALL",
+        "TOOL_RESULT",
+        "MESSAGE",
+        "MESSAGE_END",
+    ]
+    assert parsed_events[1]["data"]["toolName"] == "web_search"
+    assert parsed_events[2]["data"]["result"]["query"] == "JeecgBoot 最新版本"
+    assert parsed_events[2]["data"]["result"]["results"][0]["url"] == "https://www.jeecg.com"
+    assert "搜索结果" in parsed_events[3]["data"]["message"]
+
+
+def test_web_search_tool_unwraps_duckduckgo_redirect_url():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev"),
+        input="OpenAI Codex",
+        enable_search=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="""
+            <html><body>
+              <a rel="nofollow" class="result__a" href="/l/?uddg=https%3A%2F%2Fopenai.com%2Fcodex">OpenAI Codex</a>
+              <a class="result__snippet">OpenAI Codex product page.</a>
+            </body></html>
+            """,
+        )
+
+    registry = ToolRegistry()
+    registry._tools["web_search"] = WebSearchTool(transport=httpx.MockTransport(handler))
+
+    events = collect_stream(FakeWebSearchChatService(FakeJeecgClient(), registry), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert parsed_events[2]["data"]["result"]["results"][0]["url"] == "https://openai.com/codex"
 
 
 def test_model_non_json_response_has_actionable_error():

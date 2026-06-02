@@ -14,7 +14,7 @@ class SkillRegistry:
                 ),
                 category="JeecgBoot",
                 selection_mode="multiple",
-                available_tool_names=["weather"],
+                available_tool_names=["weather", "web_search"],
                 default_tool_names=["weather"],
                 forbidden_tool_names=[],
                 spec_kit=SpecKitBinding(

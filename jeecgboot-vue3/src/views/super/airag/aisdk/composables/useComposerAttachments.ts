@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import type { ComposerAttachment } from './types';
+import type { ComposerAttachment } from '../types';
 
 export function useComposerAttachments() {
   const attachments = ref<ComposerAttachment[]>([]);

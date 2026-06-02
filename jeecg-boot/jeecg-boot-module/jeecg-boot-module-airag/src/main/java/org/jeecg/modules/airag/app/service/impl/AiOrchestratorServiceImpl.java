@@ -175,6 +175,7 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         payload.put("topic_id", request.getTopicId());
         payload.put("enable_search", Boolean.TRUE.equals(request.getEnableSearch()));
         payload.put("skill_ids", request.getSkillIds());
+        payload.put("messages", request.getMessages());
         payload.put("user_context", buildUserContext(httpRequest));
         return payload;
     }

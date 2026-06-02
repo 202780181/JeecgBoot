@@ -29,6 +29,13 @@ QWEATHER_API_HOST=https://你的项目APIHost
 QWEATHER_GEO_API_HOST=https://你的GeoAPIHost
 QWEATHER_API_KEY=你的和风天气项目 Key
 QWEATHER_TIMEOUT_SECONDS=15
+
+# 联网搜索，用于 web_search 工具
+# 默认 duckduckgo 不需要 Key；生产环境建议改为 tavily 或 brave 并配置 WEB_SEARCH_API_KEY。
+WEB_SEARCH_PROVIDER=duckduckgo
+WEB_SEARCH_API_KEY=
+WEB_SEARCH_TIMEOUT_SECONDS=15
+WEB_SEARCH_MAX_RESULTS=5
 ```
 
 ## API

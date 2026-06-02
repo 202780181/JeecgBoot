@@ -2,21 +2,15 @@ import { Chat } from '@ai-sdk/vue';
 import type {
   AiSdkMessageMetadata,
   AiSdkMessagePart,
-  AiSdkSpecArtifact,
-  AiSdkSpecData,
-  AiSdkSpecPart,
+  AiSdkSourceItem,
+  AiSdkSourcePart,
   AiSdkTextPart,
   AiSdkThinkingPart,
-  AiSdkToolPart,
   AiSdkUIMessage,
   AiSdkWeatherPart,
-} from './types';
+} from '../types';
 
-interface UseAiSdkChatMessagesOptions {
-  scheduleScrollToBottom: () => void;
-}
-
-export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
+export function useAiSdkChatMessages() {
   const chat = new Chat<AiSdkUIMessage>({
     messages: [],
   });
@@ -38,7 +32,6 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
       ...(metadata ? { metadata } : {}),
     };
     chat.messages = [...chat.messages, message];
-    options.scheduleScrollToBottom();
     return id;
   }
 
@@ -50,7 +43,6 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
       parts: [createThinkingPart()],
     };
     chat.messages = [...chat.messages, message];
-    options.scheduleScrollToBottom();
     return id;
   }
 
@@ -62,7 +54,6 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
         parts: mergeTextPart(getMessageParts(message), text, 'streaming'),
       };
     });
-    options.scheduleScrollToBottom();
   }
 
   function finishMessage(id: string) {
@@ -73,7 +64,6 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
         parts: getMessageParts(message).map((part): AiSdkMessagePart => (part.type === 'text' ? { ...part, state: 'done' } : part)),
       };
     });
-    options.scheduleScrollToBottom();
   }
 
   function appendWeatherPart(id: string, data: Recordable) {
@@ -84,29 +74,17 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
         parts: [...removeThinkingParts(getMessageParts(message)), createWeatherPart(data)],
       };
     });
-    options.scheduleScrollToBottom();
   }
 
-  function appendToolPart(id: string, data: Recordable) {
+  function appendSourcePart(id: string, items: AiSdkSourceItem[]) {
+    if (!items.length) return;
     chat.messages = chat.messages.map((message): AiSdkUIMessage => {
       if (message.id !== id) return message;
       return {
         ...message,
-        parts: [...removeThinkingParts(getMessageParts(message)), createToolPart(data)],
+        parts: mergeSourcePart(getMessageParts(message), items),
       };
     });
-    options.scheduleScrollToBottom();
-  }
-
-  function appendSpecPart(id: string, data: AiSdkSpecData) {
-    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
-      if (message.id !== id) return message;
-      return {
-        ...message,
-        parts: mergeSpecPart(getMessageParts(message), data),
-      };
-    });
-    options.scheduleScrollToBottom();
   }
 
   function clearMessages() {
@@ -131,63 +109,61 @@ export function useAiSdkChatMessages(options: UseAiSdkChatMessagesOptions) {
     return { type: 'text', text, state };
   }
 
-  function createThinkingPart(): AiSdkThinkingPart {
-    return { type: 'data-thinking', data: {} };
+  function updateThinkingMessage(id: string, text: string) {
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: [createThinkingPart(text)],
+      };
+    });
+  }
+
+  function createThinkingPart(text = '正在思考'): AiSdkThinkingPart {
+    return { type: 'data-thinking', data: { text } };
   }
 
   function createWeatherPart(data: Recordable): AiSdkWeatherPart {
     return { type: 'data-weather', data };
   }
 
-  function createToolPart(data: Recordable): AiSdkToolPart {
-    return { type: 'data-tool', data };
+  function createSourcePart(items: AiSdkSourceItem[]): AiSdkSourcePart {
+    return { type: 'data-source', data: { items } };
   }
 
-  function createSpecPart(data: AiSdkSpecData): AiSdkSpecPart {
-    return { type: 'data-spec', data };
-  }
-
-  function mergeSpecPart(parts: AiSdkMessagePart[], data: AiSdkSpecData): AiSdkMessagePart[] {
+  function mergeSourcePart(parts: AiSdkMessagePart[], items: AiSdkSourceItem[]): AiSdkMessagePart[] {
     const nextParts = removeThinkingParts(parts);
-    const index = nextParts.findIndex((part) => part.type === 'data-spec');
+    const index = nextParts.findIndex((part) => part.type === 'data-source');
     if (index < 0) {
-      return [...nextParts, createSpecPart({ ...data, artifacts: normalizeSpecArtifacts(data) })];
+      return [...nextParts, createSourcePart(dedupeSources(items))];
     }
-    const current = nextParts[index] as AiSdkSpecPart;
-    nextParts[index] = createSpecPart({
-      ...current.data,
-      ...data,
-      artifacts: mergeSpecArtifacts(current.data.artifacts, data),
-    });
+    const current = nextParts[index] as AiSdkSourcePart;
+    nextParts[index] = createSourcePart(dedupeSources([...(current.data.items || []), ...items]));
     return nextParts;
   }
 
-  function normalizeSpecArtifacts(data: AiSdkSpecData): AiSdkSpecArtifact[] {
-    return data.artifact ? [data.artifact] : [];
-  }
-
-  function mergeSpecArtifacts(current: AiSdkSpecArtifact[] | undefined, data: AiSdkSpecData): AiSdkSpecArtifact[] {
-    const artifacts = [...(current || [])];
-    if (!data.artifact?.type) return artifacts;
-    const index = artifacts.findIndex((artifact) => artifact.type === data.artifact?.type);
-    if (index >= 0) {
-      artifacts[index] = data.artifact;
-      return artifacts;
+  function dedupeSources(items: AiSdkSourceItem[]) {
+    const seen = new Set<string>();
+    const result: AiSdkSourceItem[] = [];
+    for (const item of items) {
+      if (!item.url || seen.has(item.url)) continue;
+      seen.add(item.url);
+      result.push(item);
     }
-    return [...artifacts, data.artifact];
+    return result.slice(0, 6);
   }
 
   return {
     addMessage,
     addThinkingMessage,
-    appendSpecPart,
-    appendToolPart,
+    appendSourcePart,
     appendWeatherPart,
     chat,
     clearMessages,
     finishMessage,
     getMessageParts,
     getMessageText,
+    updateThinkingMessage,
     updateMessage,
   };
 }

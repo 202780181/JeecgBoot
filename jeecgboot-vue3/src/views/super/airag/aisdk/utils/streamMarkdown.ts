@@ -104,7 +104,9 @@ function renderActiveSegment(segment: MarkdownSegment) {
       '<pre class="stream-code-preview">',
       '<div class="code-block-header"><span class="code-block-header__lang">',
       escapeHtml(segment.activeFenceLanguage || 'text'),
-      '</span></div>',
+      '</span>',
+      renderCodeCopyButton(),
+      '</div>',
       '<code>',
       escapeHtml(code),
       '</code></pre>',
@@ -141,13 +143,19 @@ function renderCodeBlock(str: string, lang?: string) {
     '<pre class="code-block-wrapper">',
     '<div class="code-block-header"><span class="code-block-header__lang">',
     escapeHtml(language),
-    '</span></div>',
+    '</span>',
+    renderCodeCopyButton(),
+    '</div>',
     '<code class="hljs code-block-body ',
     escapeHtml(language),
     '">',
     str,
     '</code></pre>',
   ].join('');
+}
+
+function renderCodeCopyButton() {
+  return '<button class="code-block-copy" type="button"><span class="code-block-copy-icon">⧉</span><span>复制</span></button>';
 }
 
 function escapeHtml(value: string) {

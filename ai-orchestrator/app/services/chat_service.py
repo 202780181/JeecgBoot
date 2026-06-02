@@ -16,6 +16,32 @@ from app.tools import ToolRegistry
 from app.tools.base import BaseTool, ToolResult
 
 
+class SkillValidationError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        code: str,
+        *,
+        skill_ids: list[str] | None = None,
+        tool_names: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.skill_ids = skill_ids or []
+        self.tool_names = tool_names or []
+
+    def to_event_data(self) -> dict:
+        data = {
+            "code": self.code,
+            "message": str(self),
+        }
+        if self.skill_ids:
+            data["skillIds"] = self.skill_ids
+        if self.tool_names:
+            data["toolNames"] = self.tool_names
+        return data
+
+
 class ChatService:
     def __init__(
         self,
@@ -41,11 +67,11 @@ class ChatService:
             topic_id,
         )
         try:
+            selected_skills = self._resolve_and_validate_skills(request.skill_ids)
             model = await self.jeecg_client.get_model_config(
                 request.app.model_id,
                 request.user_context,
             )
-            selected_skills = self.skill_registry.resolve(request.skill_ids)
             for skill in selected_skills:
                 yield stream_event(
                     request_id,
@@ -140,6 +166,14 @@ class ChatService:
                 request_id,
                 StreamEventType.MESSAGE_END,
                 None,
+                conversation_id,
+                topic_id,
+            )
+        except SkillValidationError as exc:
+            yield stream_event(
+                request_id,
+                StreamEventType.ERROR,
+                exc.to_event_data(),
                 conversation_id,
                 topic_id,
             )
@@ -343,10 +377,27 @@ class ChatService:
         skill_prompt = self._skill_prompt(request.skill_ids)
         if skill_prompt:
             prompt = f"{prompt}\n\n{skill_prompt}"
+        if request.enable_search:
+            prompt = (
+                f"{prompt}\n\n"
+                "联网搜索已开启。遇到实时信息、新闻、价格、版本、官方文档、网页资料或你不确定的信息时，"
+                "优先调用 web_search 工具；回答时要基于搜索结果总结，并尽量附上来源链接。"
+            )
         return [
             {"role": "system", "content": prompt},
+            *self._context_messages(request),
             {"role": "user", "content": request.input},
         ]
+
+    def _context_messages(self, request: AppChatStreamRequest) -> list[dict]:
+        context_messages: list[dict] = []
+        for message in request.messages[-12:]:
+            role = message.role if message.role in {"user", "assistant"} else ""
+            content = message.content.strip()
+            if not role or not content or content == request.input:
+                continue
+            context_messages.append({"role": role, "content": content[:4000]})
+        return context_messages
 
     def _skill_prompt(self, skill_ids: list[str] | None) -> str:
         skills = self.skill_registry.resolve(skill_ids)
@@ -363,15 +414,71 @@ class ChatService:
             prompt = f"{prompt}\n\nspec-kit 绑定策略：\n{spec_instructions}"
         return prompt
 
-    def _available_tool_names(self, skill_ids: list[str] | None) -> list[str] | None:
+    def _resolve_and_validate_skills(self, skill_ids: list[str] | None) -> list[SkillSpec]:
+        normalized_skill_ids = self._dedupe_names(skill_ids or [])
+        if not normalized_skill_ids:
+            return []
+
+        selected_skills: list[SkillSpec] = []
+        for skill_id in normalized_skill_ids:
+            try:
+                selected_skills.append(self.skill_registry.get(skill_id))
+            except ValueError as exc:
+                raise SkillValidationError(
+                    f"Skill 不存在或未注册：{skill_id}",
+                    "SKILL_NOT_FOUND",
+                    skill_ids=[skill_id],
+                ) from exc
+
+        self._validate_skill_conflicts(selected_skills)
+        self._validate_skill_tools(selected_skills)
+        return selected_skills
+
+    def _validate_skill_conflicts(self, skills: list[SkillSpec]) -> None:
+        if len(skills) <= 1:
+            return
+        single_skills = [skill for skill in skills if skill.selection_mode == "single"]
+        if not single_skills:
+            return
+        raise SkillValidationError(
+            "已选择的 Skills 存在互斥关系，请只保留一个单选 Skill 后再发送。",
+            "SKILL_CONFLICT",
+            skill_ids=[skill.id for skill in skills],
+        )
+
+    def _validate_skill_tools(self, skills: list[SkillSpec]) -> None:
+        registered_tool_names = {tool.spec.name for tool in self.tool_registry.list_tools()}
+        missing_tool_names: list[str] = []
+        for skill in skills:
+            referenced_tool_names = [
+                *(skill.available_tool_names or []),
+                *skill.default_tool_names,
+                *skill.forbidden_tool_names,
+            ]
+            for tool_name in referenced_tool_names:
+                if tool_name not in registered_tool_names and tool_name not in missing_tool_names:
+                    missing_tool_names.append(tool_name)
+        if missing_tool_names:
+            raise SkillValidationError(
+                f"Skill 依赖的工具不可用：{', '.join(missing_tool_names)}",
+                "SKILL_TOOL_UNAVAILABLE",
+                skill_ids=[skill.id for skill in skills],
+                tool_names=missing_tool_names,
+            )
+
+    def _available_tool_names(self, skill_ids: list[str] | None, enable_search: bool = False) -> list[str] | None:
         skills = self.skill_registry.resolve(skill_ids)
         if not skills:
-            return None
+            if enable_search:
+                return [tool.spec.name for tool in self.tool_registry.list_tools()]
+            return self._non_search_tool_names()
         tool_names: list[str] | None = None
         forbidden_names: set[str] = set()
+        has_explicit_tool_allowlist = False
         for skill in skills:
             forbidden_names.update(skill.forbidden_tool_names)
             if skill.available_tool_names is not None:
+                has_explicit_tool_allowlist = True
                 tool_names = tool_names or []
                 for name in skill.available_tool_names:
                     if name not in tool_names:
@@ -382,7 +489,21 @@ class ChatService:
                     tool_names.append(name)
         if tool_names is None:
             tool_names = [tool.spec.name for tool in self.tool_registry.list_tools()]
+        if enable_search and not has_explicit_tool_allowlist and "web_search" not in tool_names:
+            tool_names.append("web_search")
+        if not enable_search:
+            forbidden_names.add("web_search")
         return [name for name in tool_names if name not in forbidden_names]
+
+    def _non_search_tool_names(self) -> list[str]:
+        return [tool.spec.name for tool in self.tool_registry.list_tools() if tool.spec.name != "web_search"]
+
+    def _dedupe_names(self, names: list[str]) -> list[str]:
+        result: list[str] = []
+        for name in names:
+            if name and name not in result:
+                result.append(name)
+        return result
 
     def _build_model_request(
         self,
@@ -407,11 +528,13 @@ class ChatService:
             "stream": stream,
         }
         if use_tools:
-            tools = self.tool_registry.openai_tools(self._available_tool_names(request.skill_ids))
+            tools = self.tool_registry.openai_tools(
+                self._available_tool_names(request.skill_ids, request.enable_search)
+            )
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
-        self._merge_generation_params(payload, model.model_params, request.enable_search)
+        self._merge_generation_params(payload, model.model_params)
         payload["stream"] = stream
         headers = {
             "Authorization": f"Bearer {model.credential.api_key}",
@@ -544,7 +667,7 @@ class ChatService:
             return f"{base_url}/v1/chat/completions"
         return f"{base_url}/chat/completions"
 
-    def _merge_generation_params(self, payload: dict, model_params: dict, enable_search: bool) -> None:
+    def _merge_generation_params(self, payload: dict, model_params: dict) -> None:
         mapping = {
             "temperature": "temperature",
             "topP": "top_p",
@@ -556,8 +679,6 @@ class ChatService:
             value = model_params.get(source)
             if value is not None:
                 payload[target] = value
-        if enable_search:
-            payload.setdefault("extra_body", {})["enable_search"] = True
         extra_params = model_params.get("extraParams")
         if isinstance(extra_params, dict):
             payload.update(extra_params)

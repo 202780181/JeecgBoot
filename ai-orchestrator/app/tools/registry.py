@@ -1,11 +1,13 @@
 from app.tools.base import BaseTool
 from app.tools.weather import WeatherTool
+from app.tools.web_search import WebSearchTool
 
 
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {
             WeatherTool.spec.name: WeatherTool(),
+            WebSearchTool.spec.name: WebSearchTool(),
         }
 
     def register(self, tool: BaseTool) -> None:

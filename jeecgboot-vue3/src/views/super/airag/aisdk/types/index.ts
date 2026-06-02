@@ -3,10 +3,13 @@ import type { UIMessage } from 'ai';
 export const AI_SDK_SESSION_TYPE = 'ai-sdk-dev';
 
 export type AiSdkUIDataTypes = {
-  thinking: Recordable;
-  tool: Recordable;
+  thinking: {
+    text?: string;
+  };
+  source: {
+    items: AiSdkSourceItem[];
+  };
   weather: Recordable;
-  spec: AiSdkSpecData;
 };
 
 export type AiSdkSpecStage = 'start' | 'spec' | 'plan' | 'tasks' | 'completed' | 'failed' | string;
@@ -49,13 +52,24 @@ export interface AiSdkMessageMetadata {
   skills?: AiSdkMessageSkill[];
 }
 
+export interface AiSdkContextMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface AiSdkSourceItem {
+  title: string;
+  url: string;
+  snippet?: string;
+  source?: string;
+}
+
 export type AiSdkUIMessage = UIMessage<AiSdkMessageMetadata, AiSdkUIDataTypes>;
 export type AiSdkMessagePart = AiSdkUIMessage['parts'][number];
 export type AiSdkTextPart = Extract<AiSdkMessagePart, { type: 'text' }>;
 export type AiSdkThinkingPart = Extract<AiSdkMessagePart, { type: 'data-thinking' }>;
-export type AiSdkToolPart = Extract<AiSdkMessagePart, { type: 'data-tool' }>;
+export type AiSdkSourcePart = Extract<AiSdkMessagePart, { type: 'data-source' }>;
 export type AiSdkWeatherPart = Extract<AiSdkMessagePart, { type: 'data-weather' }>;
-export type AiSdkSpecPart = Extract<AiSdkMessagePart, { type: 'data-spec' }>;
 
 export interface AiSdkHistoryItem {
   id: string;

@@ -1,4 +1,4 @@
-import type { NormalizedOrchestratorStreamEvent, OrchestratorEventName } from './types';
+import type { NormalizedOrchestratorStreamEvent, OrchestratorEventName } from '../types';
 
 const KNOWN_EVENTS: OrchestratorEventName[] = [
   'INIT_REQUEST_ID',

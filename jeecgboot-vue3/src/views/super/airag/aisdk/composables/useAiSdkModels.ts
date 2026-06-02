@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue';
-import type { AiModelOption } from './AiSdkChat.api';
-import { getActiveLlmModels } from './AiSdkChat.api';
+import type { AiModelOption } from '../api/AiSdkChat.api';
+import { getActiveLlmModels } from '../api/AiSdkChat.api';
 
 interface UseAiSdkModelsOptions {
   onError?: (message: string) => void;
@@ -13,7 +13,8 @@ export function useAiSdkModels(options: UseAiSdkModelsOptions = {}) {
 
   const selectedModelLabel = computed(() => {
     if (modelLoading.value) return '加载模型';
-    return modelOptions.value.find((model) => model.id === selectedModelId.value)?.displayName || '默认模型';
+    const selectedModel = modelOptions.value.find((model) => model.id === selectedModelId.value);
+    return selectedModel?.displayName || selectedModel?.name || selectedModel?.modelName || '默认模型';
   });
 
   async function loadActiveLlmModels() {

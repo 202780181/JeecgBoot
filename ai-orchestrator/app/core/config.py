@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     qweather_geo_api_host: Optional[str] = None
     qweather_api_key: Optional[str] = None
     qweather_timeout_seconds: int = 15
+    web_search_provider: str = "duckduckgo"
+    web_search_api_host: Optional[str] = None
+    web_search_api_key: Optional[str] = None
+    web_search_timeout_seconds: int = 15
+    web_search_max_results: int = 5
     spec_workspace: str = ".spec-workspace"
     spec_kit_package: str = "git+https://github.com/github/spec-kit.git"
     spec_kit_timeout_seconds: int = 120

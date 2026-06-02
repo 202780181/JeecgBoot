@@ -71,6 +71,11 @@ class UserContext(BaseModel):
     token: str | None = None
 
 
+class ChatContextMessage(BaseModel):
+    role: str
+    content: str
+
+
 class AppDebugRequest(BaseModel):
     app: AiAppConfig
     input: str = Field(min_length=1)
@@ -94,6 +99,7 @@ class AppChatStreamRequest(BaseModel):
     topic_id: str | None = None
     enable_search: bool = False
     skill_ids: list[str] = Field(default_factory=list)
+    messages: list[ChatContextMessage] = Field(default_factory=list)
     user_context: UserContext = Field(default_factory=UserContext)
 
 

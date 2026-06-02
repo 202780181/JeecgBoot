@@ -1,4 +1,4 @@
-import { AI_SDK_SESSION_TYPE, type AiSdkHistoryItem, type AiSdkUIMessage } from './types';
+import { AI_SDK_SESSION_TYPE, type AiSdkHistoryItem, type AiSdkUIMessage } from '../types';
 
 export function createConversationId() {
   return `${AI_SDK_SESSION_TYPE}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -18,7 +18,7 @@ export function loadHistoryItemsFromStorage(storageKey: string) {
           .filter((item) => item?.sessionType === AI_SDK_SESSION_TYPE && item?.id && Array.isArray(item?.messages))
           .map((item) => ({
             ...item,
-            skillIds: Array.isArray(item.skillIds) ? item.skillIds : [],
+            skillIds: Array.isArray(item.skillIds) ? item.skillIds.slice(0, 1) : [],
           }))
       : [];
   } catch {
