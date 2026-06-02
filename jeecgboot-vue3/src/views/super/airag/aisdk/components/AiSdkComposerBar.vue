@@ -1,10 +1,10 @@
 <template>
   <footer class="composer-wrap">
     <div class="composer">
-      <AttachmentList :attachments="attachments" :format-file-size="formatFileSize" @remove="$emit('removeAttachment', $event)" />
+      <AttachmentList :attachments="state.attachments" :format-file-size="state.formatFileSize" @remove="actions.removeAttachment" />
 
-      <div v-if="selectedSkills.length" class="selected-skills">
-        <button v-for="skill in selectedSkills" :key="skill.id" type="button" @click="$emit('removeSkill', skill.id)">
+      <div v-if="state.selectedSkills.length" class="selected-skills">
+        <button v-for="skill in state.selectedSkills" :key="skill.id" type="button" @click="actions.removeSkill(skill.id)">
           <span class="skill-chip-action" aria-hidden="true">
             <Icon class="skill-chip-default-icon" icon="ant-design:thunderbolt-filled" />
             <Icon class="skill-chip-close-icon" icon="ant-design:close-outlined" />
@@ -20,41 +20,41 @@
         data-placeholder="描述您的业务需求，或输入 @ 调用能力"
         role="textbox"
         aria-multiline="true"
-        @input="$emit('composerInput')"
-        @paste="$emit('composerPaste', $event)"
-        @keydown="$emit('composerKeydown', $event)"
+        @input="actions.handleComposerInput"
+        @paste="actions.handleComposerPaste"
+        @keydown="actions.handleComposerKeydown"
       ></div>
 
       <div class="composer-actions">
         <div class="composer-left">
           <div ref="addMenuWrapRef" class="add-menu-wrap">
-            <button class="round-tool" type="button" aria-label="添加" @click="$emit('toggleAddMenu')">
+            <button class="round-tool" type="button" aria-label="添加" @click="actions.toggleAddMenu">
               <Icon icon="ant-design:plus-outlined" />
             </button>
             <AnimatePresence>
               <Motion
-                v-if="addMenuOpen"
+                v-if="state.addMenuOpen"
                 as="div"
                 class="add-menu"
-                :initial="popupMotion.initial"
-                :animate="popupMotion.animate"
-                :exit="popupMotion.exit"
-                :transition="popupMotion.transition"
+                :initial="state.popupMotion.initial"
+                :animate="state.popupMotion.animate"
+                :exit="state.popupMotion.exit"
+                :transition="state.popupMotion.transition"
               >
-                <button type="button" @click="$emit('openFilePicker', 'file')">
+                <button type="button" @click="actions.openFilePicker('file')">
                   <Icon icon="ant-design:paper-clip-outlined" />
                   <span>上传文件</span>
                 </button>
-                <button type="button" @click="$emit('openFilePicker', 'image')">
+                <button type="button" @click="actions.openFilePicker('image')">
                   <Icon icon="ant-design:picture-outlined" />
                   <span>上传图片</span>
                 </button>
-                <button class="menu-toggle" type="button" @click="$emit('toggleWebSearch')">
+                <button class="menu-toggle" type="button" @click="actions.toggleWebSearch">
                   <span class="menu-toggle-label">
                     <Icon icon="ant-design:global-outlined" />
                     <span>联网搜索</span>
                   </span>
-                  <span class="switch-track" :class="{ active: webSearchEnabled }">
+                  <span class="switch-track" :class="{ active: state.webSearchEnabled }">
                     <i></i>
                   </span>
                 </button>
@@ -62,109 +62,67 @@
             </AnimatePresence>
           </div>
           <SkillsPanel
-            :active-skill-category="activeSkillCategory"
-            :filtered-skill-options="filteredSkillOptions"
-            :loading="skillsLoading"
-            :open="skillsMenuOpen"
-            :popup-motion="popupMotion"
-            :selected-skill-ids="selectedSkillIds"
-            :skill-categories="skillCategories"
-            @menu-ref="$emit('menuRef', 'skills', $event)"
-            @toggle-menu="$emit('toggleSkillsMenu')"
-            @toggle-skill="$emit('toggleSkill', $event)"
-            @update-active-category="$emit('updateActiveSkillCategory', $event)"
+            :active-skill-category="state.activeSkillCategory"
+            :filtered-skill-options="state.filteredSkillOptions"
+            :loading="state.skillsLoading"
+            :open="state.skillsMenuOpen"
+            :popup-motion="state.popupMotion"
+            :selected-skill-ids="state.selectedSkillIds"
+            :skill-categories="state.skillCategories"
+            @menu-ref="actions.setMenuRef('skills', $event)"
+            @toggle-menu="actions.toggleSkillsMenu"
+            @toggle-skill="actions.toggleSkill"
+            @update-active-category="actions.updateActiveSkillCategory"
           />
         </div>
 
         <div class="composer-right">
           <ModelMenu
-            :loading="modelLoading"
-            :model-options="modelOptions"
-            :open="modelMenuOpen"
-            :popup-motion="popupMotion"
-            :selected-model-id="selectedModelId"
-            :selected-model-label="selectedModelLabel"
-            @menu-ref="$emit('menuRef', 'model', $event)"
-            @select="$emit('selectModel', $event)"
-            @toggle-menu="$emit('toggleModelMenu')"
+            :loading="state.modelLoading"
+            :model-options="state.modelOptions"
+            :open="state.modelMenuOpen"
+            :popup-motion="state.popupMotion"
+            :selected-model-id="state.selectedModelId"
+            :selected-model-label="state.selectedModelLabel"
+            @menu-ref="actions.setMenuRef('model', $event)"
+            @select="actions.selectModel"
+            @toggle-menu="actions.toggleModelMenu"
           />
-          <button class="send-btn" type="button" :disabled="loading || !input.trim()" :aria-label="loading ? '发送中' : '发送'" @click="$emit('send')">
-            <Icon :icon="loading ? 'ant-design:loading-3-quarters-outlined' : 'material-symbols:arrow-upward-rounded'" />
+          <button class="send-btn" type="button" :disabled="state.loading || !state.input.trim()" :aria-label="state.loading ? '发送中' : '发送'" @click="actions.send">
+            <Icon :icon="state.loading ? 'ant-design:loading-3-quarters-outlined' : 'material-symbols:arrow-upward-rounded'" />
           </button>
         </div>
       </div>
     </div>
-    <input ref="fileInputRef" class="file-input" type="file" multiple :accept="fileInputAccept" @change="$emit('fileSelect', $event)" />
+    <input ref="fileInputRef" class="file-input" type="file" multiple :accept="state.fileInputAccept" @change="actions.handleFileSelect" />
   </footer>
 </template>
 
 <script setup lang="ts">
 import { AnimatePresence, Motion } from 'motion-v';
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import Icon from '@/components/Icon';
-import type { AiModelOption, AiSkillOption } from '../api/AiSdkChat.api';
-import type { ComposerAttachment, AiSdkMessageSkill } from '../types';
+import type { AiSdkComposerActions, AiSdkComposerState } from '../types/composer';
 import AttachmentList from './composer/AttachmentList.vue';
 import ModelMenu from './composer/ModelMenu.vue';
 import SkillsPanel from './composer/SkillsPanel.vue';
 
-defineProps<{
-  activeSkillCategory: string;
-  addMenuOpen: boolean;
-  attachments: ComposerAttachment[];
-  fileInputAccept: string;
-  filteredSkillOptions: AiSkillOption[];
-  formatFileSize: (size: number) => string;
-  input: string;
-  loading: boolean;
-  modelLoading: boolean;
-  modelMenuOpen: boolean;
-  modelOptions: AiModelOption[];
-  popupMotion: {
-    animate: Recordable;
-    exit: Recordable;
-    initial: Recordable;
-    transition: Recordable;
-  };
-  selectedModelId: string;
-  selectedModelLabel: string;
-  selectedSkillIds: string[];
-  selectedSkills: AiSdkMessageSkill[];
-  skillCategories: string[];
-  skillsLoading: boolean;
-  skillsMenuOpen: boolean;
-  webSearchEnabled: boolean;
+const props = defineProps<{
+  actions: AiSdkComposerActions;
+  state: AiSdkComposerState;
 }>();
 
-const emit = defineEmits<{
-  (event: 'composerInput'): void;
-  (event: 'composerKeydown', value: KeyboardEvent): void;
-  (event: 'composerPaste', value: ClipboardEvent): void;
-  (event: 'fileInputRef', value: HTMLInputElement | undefined): void;
-  (event: 'fileSelect', value: Event): void;
-  (event: 'menuRef', key: 'add' | 'skills' | 'model', value: HTMLElement | undefined): void;
-  (event: 'openFilePicker', value: 'file' | 'image'): void;
-  (event: 'removeAttachment', value: string): void;
-  (event: 'removeSkill', value: string): void;
-  (event: 'selectModel', value: string): void;
-  (event: 'send'): void;
-  (event: 'setComposerRef', value: HTMLElement | undefined): void;
-  (event: 'toggleAddMenu'): void;
-  (event: 'toggleModelMenu'): void;
-  (event: 'toggleSkill', value: string): void;
-  (event: 'toggleSkillsMenu'): void;
-  (event: 'toggleWebSearch'): void;
-  (event: 'updateActiveSkillCategory', value: string): void;
-}>();
+const actions = computed(() => props.actions);
+const state = computed(() => props.state);
 
 const addMenuWrapRef = ref<HTMLElement>();
 const composerRef = ref<HTMLElement>();
 const fileInputRef = ref<HTMLInputElement>();
 
 onMounted(() => {
-  emit('fileInputRef', fileInputRef.value);
-  emit('menuRef', 'add', addMenuWrapRef.value);
-  emit('setComposerRef', composerRef.value);
+  actions.value.setFileInputRef(fileInputRef.value);
+  actions.value.setMenuRef('add', addMenuWrapRef.value);
+  actions.value.setComposerRef(composerRef.value);
 });
 </script>
 
@@ -214,7 +172,6 @@ onMounted(() => {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
 }
 
 .composer-right {

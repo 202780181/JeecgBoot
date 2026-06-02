@@ -37,6 +37,19 @@
                 </span>
                 <span>{{ skill.name }}</span>
               </span>
+              <a
+                v-for="attachment in getMessageAttachments(message)"
+                :key="attachment.id || attachment.path || attachment.url || attachment.name"
+                class="message-attachment-chip"
+                :href="attachment.url || attachment.path"
+                target="_blank"
+                rel="noopener noreferrer"
+                @click.stop
+              >
+                <Icon :icon="getAttachmentIcon(attachment)" />
+                <span>{{ attachment.name || '附件' }}</span>
+                <em v-if="attachment.size">{{ formatFileSize(attachment.size) }}</em>
+              </a>
               <span class="user-message-text">{{ getMessageText(message) }}</span>
             </div>
             <template v-else v-for="(part, partIndex) in getMessageParts(message)" :key="partIndex">
@@ -59,46 +72,7 @@
         </div>
       </main>
 
-      <AiSdkComposerBar
-        :active-skill-category="activeSkillCategory"
-        :add-menu-open="addMenuOpen"
-        :attachments="attachments"
-        :file-input-accept="fileInputAccept"
-        :filtered-skill-options="filteredSkillOptions"
-        :format-file-size="formatFileSize"
-        :input="input"
-        :loading="loading"
-        :model-loading="modelLoading"
-        :model-menu-open="modelMenuOpen"
-        :model-options="modelOptions"
-        :popup-motion="composerPopupMotion"
-        :selected-model-id="selectedModelId"
-        :selected-model-label="selectedModelLabel"
-        :selected-skill-ids="selectedSkillIds"
-        :selected-skills="selectedSkills"
-        :skill-categories="skillCategories"
-        :skills-loading="skillsLoading"
-        :skills-menu-open="skillsMenuOpen"
-        :web-search-enabled="webSearchEnabled"
-        @composer-input="handleComposerInput"
-        @composer-keydown="handleComposerKeydown"
-        @composer-paste="handleComposerPaste"
-        @file-input-ref="fileInputRef = $event"
-        @file-select="handleFileSelect"
-        @menu-ref="setComposerMenuRef"
-        @open-file-picker="openFilePicker"
-        @remove-attachment="removeAttachment"
-        @remove-skill="removeSkill"
-        @select-model="selectModel"
-        @send="sendRequirement"
-        @set-composer-ref="composerRef = $event"
-        @toggle-add-menu="toggleAddMenu"
-        @toggle-model-menu="toggleModelMenu"
-        @toggle-skill="toggleSkill"
-        @toggle-skills-menu="toggleSkillsMenu"
-        @toggle-web-search="toggleWebSearch"
-        @update-active-skill-category="activeSkillCategory = $event"
-      />
+      <AiSdkComposerBar :actions="composerActions" :state="composerState" />
     </section>
   </div>
 </template>
@@ -109,10 +83,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import Icon from '@/components/Icon';
 import { usePageContext } from '@/hooks/component/usePageContext';
 import { useMessage } from '@/hooks/web/useMessage';
-import { useUserStore } from '@/store/modules/user';
-import { debugAssistant, getOrchestratorSkills, type AiSkillOption } from './api/AiSdkChat.api';
-import { cloneMessages } from './stores/historyStore';
-import { AI_SDK_SESSION_TYPE, type AiSdkContextMessage, type AiSdkMessageSkill, type AiSdkUIMessage } from './types';
+import { debugAssistant, getOrchestratorSkills, uploadAiSdkAttachment, type AiSkillOption } from './api/AiSdkChat.api';
+import { AI_SDK_SESSION_TYPE, type AiSdkMessageAttachment, type AiSdkMessageSkill, type AiSdkServerMessage, type AiSdkUIMessage } from './types';
+import type { AiSdkComposerActions, AiSdkComposerState } from './types/composer';
 import { useAiSdkChatMessages } from './composables/useAiSdkChatMessages';
 import { useAiSdkConversationHistory } from './composables/useAiSdkConversationHistory';
 import { useAiSdkModels } from './composables/useAiSdkModels';
@@ -174,7 +147,6 @@ const { clearCodeBlockCopyTimers, handleCodeBlockCopyClick } = useCodeBlockCopy(
   onError: (message) => createMessage.warning(message),
 });
 const pageContext = usePageContext();
-const userStore = useUserStore();
 const { scrollToBottom } = useAutoScroll(messageBoxRef);
 const { attachments, addAttachments, clearAttachments, formatFileSize, removeAttachment } = useComposerAttachments();
 const { 
@@ -208,10 +180,6 @@ const { renderAssistantStream } = useAiSdkStreamRenderer({
   updateMessage,
 });
 
-const historyStorageKey = computed(() => {
-  const username = userStore.getUserInfo?.username || userStore.getUserInfo?.id || 'anonymous';
-  return `jeecg:airag:chat:${username}:${AI_SDK_SESSION_TYPE}:history`;
-});
 const pageHeight = computed(() => Math.max((pageContext.contentHeight?.value || window.innerHeight) - 1, 560));
 const selectedSkills = computed(() => skillOptions.value.filter((skill) => selectedSkillIds.value.includes(skill.id)));
 const skillCategories = computed(() => {
@@ -223,20 +191,28 @@ const filteredSkillOptions = computed(() => {
     return activeSkillCategory.value === '全部' || (skill.category || '通用') === activeSkillCategory.value;
   });
 });
-const conversationContextMessages = computed<AiSdkContextMessage[]>(() => {
-  return chat.messages
-    .reduce<AiSdkContextMessage[]>((contextMessages, message) => {
-      const content = getMessageText(message).replace(/\s+/g, ' ').trim();
-      if (content && (message.role === 'user' || message.role === 'assistant')) {
-        contextMessages.push({
-          role: message.role,
-          content,
-        });
-      }
-      return contextMessages;
-    }, [])
-    .slice(-12);
-});
+const composerState = computed<AiSdkComposerState>(() => ({
+  activeSkillCategory: activeSkillCategory.value,
+  addMenuOpen: addMenuOpen.value,
+  attachments: attachments.value,
+  fileInputAccept: fileInputAccept.value,
+  filteredSkillOptions: filteredSkillOptions.value,
+  formatFileSize,
+  input: input.value,
+  loading: loading.value,
+  modelLoading: modelLoading.value,
+  modelMenuOpen: modelMenuOpen.value,
+  modelOptions: modelOptions.value,
+  popupMotion: composerPopupMotion,
+  selectedModelId: selectedModelId.value,
+  selectedModelLabel: selectedModelLabel.value,
+  selectedSkillIds: selectedSkillIds.value,
+  selectedSkills: selectedSkills.value,
+  skillCategories: skillCategories.value,
+  skillsLoading: skillsLoading.value,
+  skillsMenuOpen: skillsMenuOpen.value,
+  webSearchEnabled: webSearchEnabled.value,
+}));
 const {
   activeConversationId,
   cancelEditHistory,
@@ -246,36 +222,124 @@ const {
   handleHistoryItemClick,
   handleHistoryTitleInput,
   historyItems,
+  ensureActiveConversationId,
   loadConversation,
   loadHistoryItems,
-  persistActiveConversation,
+  refreshHistoryItems,
   saveHistoryTitle,
   setHistoryTitleInputRef,
   startEditHistory,
   startNewConversation,
   syncActiveConversationSkills,
+  upsertActiveConversationTitle,
 } = useAiSdkConversationHistory({
-  getMessages: () => chat.messages,
-  getSelectedSkillIds: () => selectedSkillIds.value,
-  getTitleSeed: (message) => getMessageText(message),
-  storageKey: historyStorageKey,
-  onConversationLoaded: async (item) => {
+  getConversationCreatePayload: () => ({
+    title: '新建对话',
+    appId: 'ai-sdk-dev',
+    appName: 'JeecgBoot AI 助手',
+    modelId: selectedModelId.value,
+    sessionType: AI_SDK_SESSION_TYPE,
+    skillIds: selectedSkillIds.value,
+  }),
+  onConversationLoaded: async (messages) => {
     addMenuOpen.value = false;
     skillsMenuOpen.value = false;
     clearComposer();
     clearAttachments();
-    selectedSkillIds.value = Array.isArray(item.skillIds) ? item.skillIds.slice(0, 1) : [];
-    chat.messages = item.messages?.length ? cloneMessages(item.messages) : [];
+    selectedSkillIds.value = getLastUserSkillIds(messages);
+    chat.messages = messages.map(toUiMessage);
     await scrollToBottom();
   },
   onConversationCleared: () => {
     clearMessages();
   },
+  onError: (message) => createMessage.warning(message),
 });
 
 function getMessageSkills(message: AiSdkUIMessage): AiSdkMessageSkill[] {
   const skills = message.metadata?.skills;
   return Array.isArray(skills) ? skills.filter((skill) => skill?.id && skill?.name) : [];
+}
+
+function getMessageAttachments(message: AiSdkUIMessage): AiSdkMessageAttachment[] {
+  const messageAttachments = message.metadata?.attachments;
+  return Array.isArray(messageAttachments)
+    ? messageAttachments.filter((attachment) => attachment?.name || attachment?.url || attachment?.path)
+    : [];
+}
+
+function getAttachmentIcon(attachment: AiSdkMessageAttachment) {
+  const type = attachment.type || '';
+  const name = attachment.name || attachment.path || '';
+  if (type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(name)) {
+    return 'ant-design:file-image-outlined';
+  }
+  if (/\.pdf$/i.test(name) || type.includes('pdf')) {
+    return 'ant-design:file-pdf-outlined';
+  }
+  if (/\.(xlsx?|csv)$/i.test(name)) {
+    return 'ant-design:file-excel-outlined';
+  }
+  if (/\.(docx?|md|txt|json)$/i.test(name)) {
+    return 'ant-design:file-text-outlined';
+  }
+  return 'ant-design:file-outlined';
+}
+
+function toUiMessage(message: AiSdkServerMessage): AiSdkUIMessage {
+  const role = message.role === 'user' ? 'user' : 'assistant';
+  const skillIds = Array.isArray(message.skillIds) ? message.skillIds : [];
+  const metadata = message.metadata || {};
+  const messageAttachments = normalizeMessageAttachments(metadata.attachments);
+  const skills =
+    role === 'user'
+      ? skillIds
+          .map((id) => {
+            const skill = skillOptions.value.find((item) => item.id === id);
+            return skill ? { id, name: skill.name } : { id, name: id };
+          })
+          .filter((skill) => skill.id)
+      : [];
+  const uiMetadata = {
+    ...(skills.length ? { skills } : {}),
+    ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
+  };
+  return {
+    id: message.id,
+    role,
+    parts: [
+      {
+        type: 'text',
+        text: message.content || '',
+        state: 'done',
+      },
+    ],
+    ...(Object.keys(uiMetadata).length ? { metadata: uiMetadata } : {}),
+  };
+}
+
+function normalizeMessageAttachments(value: unknown): AiSdkMessageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Recordable => !!item && typeof item === 'object')
+    .map((item) => ({
+      id: typeof item.id === 'string' ? item.id : undefined,
+      name: typeof item.name === 'string' ? item.name : undefined,
+      size: typeof item.size === 'number' ? item.size : undefined,
+      type: typeof item.type === 'string' ? item.type : undefined,
+      path: typeof item.path === 'string' ? item.path : undefined,
+      url: typeof item.url === 'string' ? item.url : undefined,
+    }))
+    .filter((item) => item.name || item.path || item.url);
+}
+
+function getLastUserSkillIds(messages: AiSdkServerMessage[]) {
+  const userMessage = [...messages].reverse().find((message) => message.role === 'user' && Array.isArray(message.skillIds));
+  return userMessage?.skillIds?.slice(0, 1) || [];
+}
+
+async function buildAttachmentPayload() {
+  return Promise.all(attachments.value.map((attachment) => uploadAiSdkAttachment(attachment.file, attachment.id)));
 }
 
 function handleMessageListClick(event: MouseEvent) {
@@ -315,7 +379,7 @@ function removeSkill(skillId: string) {
 
 function setSelectedSkillIds(skillIds: string[]) {
   selectedSkillIds.value = skillIds.slice(0, 1);
-  syncActiveConversationSkills();
+  void syncActiveConversationSkills();
 }
 
 function syncComposerText() {
@@ -363,6 +427,18 @@ function toggleWebSearch() {
   webSearchEnabled.value = !webSearchEnabled.value;
 }
 
+function updateActiveSkillCategory(value: string) {
+  activeSkillCategory.value = value;
+}
+
+function setComposerRef(value: HTMLElement | undefined) {
+  composerRef.value = value;
+}
+
+function setFileInputRef(value: HTMLInputElement | undefined) {
+  fileInputRef.value = value;
+}
+
 function setComposerMenuRef(key: 'add' | 'skills' | 'model', value: HTMLElement | undefined) {
   if (key === 'add') {
     addMenuWrapRef.value = value;
@@ -374,6 +450,27 @@ function setComposerMenuRef(key: 'add' | 'skills' | 'model', value: HTMLElement 
   }
   modelMenuWrapRef.value = value;
 }
+
+const composerActions: AiSdkComposerActions = {
+  handleComposerInput,
+  handleComposerKeydown,
+  handleComposerPaste,
+  handleFileSelect,
+  openFilePicker,
+  removeAttachment,
+  removeSkill,
+  selectModel,
+  send: sendRequirement,
+  setComposerRef,
+  setFileInputRef,
+  setMenuRef: setComposerMenuRef,
+  toggleAddMenu,
+  toggleModelMenu,
+  toggleSkill,
+  toggleSkillsMenu,
+  toggleWebSearch,
+  updateActiveSkillCategory,
+};
 
 function handleDocumentPointerDown(event: PointerEvent) {
   if (!addMenuOpen.value && !skillsMenuOpen.value && !modelMenuOpen.value) return;
@@ -438,34 +535,44 @@ async function sendRequirement() {
   syncComposerText();
   const requirement = input.value.trim();
   if (!requirement || loading.value) return;
+  if (!selectedModelId.value) {
+    createMessage.warning(modelLoading.value ? '模型配置加载中，请稍后再发送' : '请先配置并选择一个可用模型');
+    return;
+  }
 
-  clearComposer();
+  loading.value = true;
   const sentSkillIds = [...selectedSkillIds.value];
   const sentSkills = selectedSkills.value.map((skill) => ({ id: skill.id, name: skill.name }));
-  const contextMessages = conversationContextMessages.value;
+  let sentAttachments: Awaited<ReturnType<typeof buildAttachmentPayload>> = [];
+  let conversationId = '';
+  try {
+    sentAttachments = await buildAttachmentPayload();
+    conversationId = await ensureActiveConversationId();
+  } catch (error: any) {
+    createMessage.error(error?.message || '附件上传或新建会话失败');
+    loading.value = false;
+    return;
+  }
+  clearComposer();
+  upsertActiveConversationTitle(requirement);
   setSelectedSkillIds([]);
+  clearAttachments();
   skillsMenuOpen.value = false;
-  addMessage('user', requirement, sentSkills.length ? { skills: sentSkills } : undefined);
-  loading.value = true;
+  addMessage('user', requirement, {
+    ...(sentSkills.length ? { skills: sentSkills } : {}),
+    ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
+  });
 
   const assistantId = addThinkingMessage();
   await scrollToBottom();
   try {
     const stream = await debugAssistant({
+      conversationId,
       content: requirement,
-      app: {
-        id: 'ai-sdk-dev',
-        name: 'JeecgBoot AI 助手',
-        type: 'chatSimple',
-        prompt: '你是 JeecgBoot AI 应用开发助手，请结合用户需求给出可执行的开发建议。',
-        modelId: selectedModelId.value,
-        model_id: selectedModelId.value,
-      },
-      responseMode: 'streaming',
-      conversationId: activeConversationId.value || undefined,
-      enableSearch: webSearchEnabled.value,
-      messages: contextMessages,
       skillIds: sentSkillIds,
+      modelId: selectedModelId.value,
+      enableSearch: webSearchEnabled.value,
+      attachments: sentAttachments,
       sessionType: AI_SDK_SESSION_TYPE,
     });
     await renderAssistantStream(stream, assistantId);
@@ -473,7 +580,7 @@ async function sendRequirement() {
     createMessage.error(error?.message || 'AI Orchestrator 服务调用失败');
     updateMessage(assistantId, '调用 AI Orchestrator 失败，请确认 Python 服务已启动，并检查 JeecgBoot 的 ai-orchestrator 地址配置。');
   } finally {
-    persistActiveConversation(requirement);
+    await refreshHistoryItems();
     loading.value = false;
   }
 }
@@ -488,12 +595,12 @@ function clearMessages() {
   clearComposer();
 }
 
-onMounted(() => {
-  loadHistoryItems();
+onMounted(async () => {
+  await loadHistoryItems();
   loadActiveLlmModels();
   loadSkills();
   if (historyItems.value.length) {
-    loadConversation(historyItems.value[0].id);
+    await loadConversation(historyItems.value[0].id);
   }
   document.addEventListener('pointerdown', handleDocumentPointerDown);
 });

@@ -48,8 +48,18 @@ export interface AiSdkMessageSkill {
   name: string;
 }
 
+export interface AiSdkMessageAttachment {
+  id?: string;
+  name?: string;
+  size?: number;
+  type?: string;
+  path?: string;
+  url?: string;
+}
+
 export interface AiSdkMessageMetadata {
   skills?: AiSdkMessageSkill[];
+  attachments?: AiSdkMessageAttachment[];
 }
 
 export interface AiSdkContextMessage {
@@ -75,9 +85,35 @@ export interface AiSdkHistoryItem {
   id: string;
   title: string;
   updatedAt: number;
-  messages: AiSdkUIMessage[];
   skillIds: string[];
   sessionType: typeof AI_SDK_SESSION_TYPE;
+  appId?: string;
+  appName?: string;
+  modelId?: string;
+}
+
+export interface AiSdkServerConversation {
+  id: string;
+  title: string;
+  appId?: string;
+  appName?: string;
+  modelId?: string;
+  sessionType: typeof AI_SDK_SESSION_TYPE;
+  skillIds?: string[];
+  createTime?: string;
+  updateTime?: string;
+}
+
+export interface AiSdkServerMessage {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'assistant' | string;
+  content?: string;
+  status?: string;
+  modelId?: string;
+  skillIds?: string[];
+  metadata?: Recordable;
+  createTime?: string;
 }
 
 export type OrchestratorEventName =

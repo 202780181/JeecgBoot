@@ -171,6 +171,47 @@
   }
 }
 
+.message-attachment-chip {
+  display: inline-flex;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  color: #202124;
+  font-size: 13px;
+  line-height: 1;
+  text-decoration: none;
+  background: #ffffff;
+  border: 1px solid #dfe2e7;
+  border-radius: 8px;
+  align-items: center;
+  gap: 5px;
+
+  &:hover {
+    color: var(--ai-primary);
+    border-color: var(--ai-primary-border);
+  }
+
+  :deep(.anticon),
+  :deep(svg) {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  em {
+    color: var(--ai-muted);
+    font-size: 12px;
+    font-style: normal;
+    white-space: nowrap;
+  }
+}
+
 .message-skill-icon {
   display: inline-flex;
   width: 18px;

@@ -1,20 +1,18 @@
-import { nextTick, ref, type ComputedRef } from 'vue';
+import { nextTick, ref } from 'vue';
 import {
-  cloneMessages,
-  createConversationId,
-  getConversationTitle,
-  loadHistoryItemsFromStorage,
-  saveHistoryItemsToStorage,
-} from '../stores/historyStore';
-import { AI_SDK_SESSION_TYPE, type AiSdkHistoryItem, type AiSdkUIMessage } from '../types';
+  createAiSdkConversation,
+  deleteAiSdkConversation,
+  listAiSdkConversations,
+  listAiSdkMessages,
+  renameAiSdkConversation,
+} from '../api/AiSdkChat.api';
+import { AI_SDK_SESSION_TYPE, type AiSdkHistoryItem, type AiSdkServerConversation, type AiSdkServerMessage } from '../types';
 
 interface UseAiSdkConversationHistoryOptions {
-  getMessages: () => AiSdkUIMessage[];
-  getSelectedSkillIds: () => string[];
-  getTitleSeed: (message: AiSdkUIMessage) => string;
+  getConversationCreatePayload: () => Recordable;
   onConversationCleared: () => void;
-  onConversationLoaded: (item: AiSdkHistoryItem) => Promise<void> | void;
-  storageKey: ComputedRef<string>;
+  onConversationLoaded: (messages: AiSdkServerMessage[], item: AiSdkHistoryItem) => Promise<void> | void;
+  onError: (message: string) => void;
 }
 
 export function useAiSdkConversationHistory(options: UseAiSdkConversationHistoryOptions) {
@@ -24,12 +22,14 @@ export function useAiSdkConversationHistory(options: UseAiSdkConversationHistory
   const historyItems = ref<AiSdkHistoryItem[]>([]);
   const historyTitleInputRef = ref<HTMLInputElement | null>(null);
 
-  function loadHistoryItems() {
-    historyItems.value = loadHistoryItemsFromStorage(options.storageKey.value);
-  }
-
-  function saveHistoryItems() {
-    saveHistoryItemsToStorage(options.storageKey.value, historyItems.value);
+  async function loadHistoryItems() {
+    try {
+      const conversations = await listAiSdkConversations(AI_SDK_SESSION_TYPE);
+      historyItems.value = conversations.map(toHistoryItem);
+    } catch (error: any) {
+      options.onError(error?.message || '会话历史加载失败');
+      historyItems.value = [];
+    }
   }
 
   function setHistoryTitleInputRef(el: Element | null) {
@@ -53,54 +53,44 @@ export function useAiSdkConversationHistory(options: UseAiSdkConversationHistory
     editingHistoryTitle.value = '';
   }
 
-  function saveHistoryTitle(item: AiSdkHistoryItem) {
+  async function saveHistoryTitle(item: AiSdkHistoryItem) {
     if (editingHistoryId.value !== item.id) return;
     const title = editingHistoryTitle.value.replace(/\s+/g, ' ').trim() || item.title;
-    historyItems.value = historyItems.value.map((history) => (history.id === item.id ? { ...history, title, updatedAt: Date.now() } : history));
-    saveHistoryItems();
-    cancelEditHistory();
-  }
-
-  function syncActiveConversationSkills(skillIds = options.getSelectedSkillIds()) {
-    if (!activeConversationId.value) return;
-    let changed = false;
-    historyItems.value = historyItems.value.map((item) => {
-      if (item.id !== activeConversationId.value) return item;
-      changed = true;
-      return { ...item, skillIds: skillIds.slice(0, 1), updatedAt: Date.now() };
-    });
-    if (changed) {
-      saveHistoryItems();
+    try {
+      await renameAiSdkConversation(item.id, title);
+      historyItems.value = historyItems.value.map((history) => (history.id === item.id ? { ...history, title, updatedAt: Date.now() } : history));
+      cancelEditHistory();
+    } catch (error: any) {
+      options.onError(error?.message || '会话重命名失败');
     }
   }
 
-  function persistActiveConversation(titleSeed?: string) {
-    const messages = options.getMessages();
-    const hasUserMessage = messages.some((message) => message.role === 'user');
-    if (!hasUserMessage) return;
+  async function syncActiveConversationSkills() {
+    await loadHistoryItems();
+  }
 
-    const id = activeConversationId.value || createConversationId();
-    activeConversationId.value = id;
-    const existed = historyItems.value.find((item) => item.id === id);
-    const firstUserMessage = messages.find((message) => message.role === 'user');
-    const item: AiSdkHistoryItem = {
-      id,
-      title: existed?.title || getConversationTitle(titleSeed || (firstUserMessage ? options.getTitleSeed(firstUserMessage) : '')),
-      updatedAt: Date.now(),
-      messages: cloneMessages(messages),
-      skillIds: options.getSelectedSkillIds().slice(0, 1),
-      sessionType: AI_SDK_SESSION_TYPE,
-    };
-    historyItems.value = [item, ...historyItems.value.filter((history) => history.id !== id)];
-    saveHistoryItems();
+  async function ensureActiveConversationId() {
+    if (activeConversationId.value) {
+      return activeConversationId.value;
+    }
+    const conversation = await createAiSdkConversation(options.getConversationCreatePayload());
+    const item = toHistoryItem(conversation);
+    activeConversationId.value = item.id;
+    historyItems.value = [item, ...historyItems.value.filter((history) => history.id !== item.id)];
+    return item.id;
   }
 
   async function loadConversation(id: string) {
     const target = historyItems.value.find((item) => item.id === id);
     if (!target) return;
-    cancelEditHistory();
-    activeConversationId.value = id;
-    await options.onConversationLoaded(target);
+    try {
+      cancelEditHistory();
+      activeConversationId.value = id;
+      const messages = await listAiSdkMessages(id);
+      await options.onConversationLoaded(messages, target);
+    } catch (error: any) {
+      options.onError(error?.message || '会话消息加载失败');
+    }
   }
 
   function handleHistoryItemClick(item: AiSdkHistoryItem) {
@@ -109,23 +99,73 @@ export function useAiSdkConversationHistory(options: UseAiSdkConversationHistory
   }
 
   async function deleteHistoryItem(id: string) {
-    const wasActive = activeConversationId.value === id;
-    historyItems.value = historyItems.value.filter((item) => item.id !== id);
-    saveHistoryItems();
-    if (editingHistoryId.value === id) {
-      cancelEditHistory();
+    try {
+      const wasActive = activeConversationId.value === id;
+      await deleteAiSdkConversation(id);
+      historyItems.value = historyItems.value.filter((item) => item.id !== id);
+      if (editingHistoryId.value === id) {
+        cancelEditHistory();
+      }
+      if (!wasActive) return;
+      if (historyItems.value.length) {
+        await loadConversation(historyItems.value[0].id);
+        return;
+      }
+      await startNewConversation();
+    } catch (error: any) {
+      options.onError(error?.message || '会话删除失败');
     }
-    if (!wasActive) return;
-    if (historyItems.value.length) {
-      await loadConversation(historyItems.value[0].id);
-      return;
-    }
-    startNewConversation();
   }
 
-  function startNewConversation() {
-    activeConversationId.value = '';
-    options.onConversationCleared();
+  async function startNewConversation() {
+    try {
+      cancelEditHistory();
+      options.onConversationCleared();
+      const conversation = await createAiSdkConversation(options.getConversationCreatePayload());
+      const item = toHistoryItem(conversation);
+      activeConversationId.value = item.id;
+      historyItems.value = [item, ...historyItems.value.filter((history) => history.id !== item.id)];
+    } catch (error: any) {
+      options.onError(error?.message || '新建会话失败');
+    }
+  }
+
+  function upsertActiveConversationTitle(titleSeed: string) {
+    if (!activeConversationId.value) return;
+    historyItems.value = historyItems.value.map((item) => {
+      if (item.id !== activeConversationId.value || item.title !== '新建对话') {
+        return item;
+      }
+      return { ...item, title: buildTitle(titleSeed), updatedAt: Date.now() };
+    });
+  }
+
+  async function refreshHistoryItems() {
+    await loadHistoryItems();
+  }
+
+  function toHistoryItem(conversation: AiSdkServerConversation): AiSdkHistoryItem {
+    return {
+      id: conversation.id,
+      title: conversation.title || '新建对话',
+      updatedAt: toTimestamp(conversation.updateTime || conversation.createTime),
+      skillIds: Array.isArray(conversation.skillIds) ? conversation.skillIds.slice(0, 1) : [],
+      sessionType: AI_SDK_SESSION_TYPE,
+      appId: conversation.appId,
+      appName: conversation.appName,
+      modelId: conversation.modelId,
+    };
+  }
+
+  function toTimestamp(value?: string) {
+    if (!value) return Date.now();
+    const time = new Date(value.replace(' ', 'T')).getTime();
+    return Number.isFinite(time) ? time : Date.now();
+  }
+
+  function buildTitle(content: string) {
+    const text = content.replace(/\s+/g, ' ').trim();
+    return text.length > 18 ? `${text.slice(0, 18)}...` : text || '新建对话';
   }
 
   return {
@@ -134,16 +174,18 @@ export function useAiSdkConversationHistory(options: UseAiSdkConversationHistory
     deleteHistoryItem,
     editingHistoryId,
     editingHistoryTitle,
+    ensureActiveConversationId,
     handleHistoryItemClick,
     handleHistoryTitleInput,
     historyItems,
     loadConversation,
     loadHistoryItems,
-    persistActiveConversation,
+    refreshHistoryItems,
     saveHistoryTitle,
     setHistoryTitleInputRef,
     startEditHistory,
     startNewConversation,
     syncActiveConversationSkills,
+    upsertActiveConversationTitle,
   };
 }

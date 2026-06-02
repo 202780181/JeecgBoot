@@ -43,6 +43,11 @@ public class ChatSendParams {
     private String appId;
 
     /**
+     * 前端选择的模型ID
+     */
+    private String modelId;
+
+    /**
      * 图片列表
      */
     private List<String> images;
@@ -60,6 +65,11 @@ public class ChatSendParams {
     private Map<String, Object> flowInputs;
 
     /**
+     * 附件元数据列表
+     */
+    private List<Map<String, Object>> attachments;
+
+    /**
      * 是否开启网络搜索（仅千问模型支持）
      */
     private Boolean enableSearch;
@@ -68,11 +78,6 @@ public class ChatSendParams {
      * 前端选择的 Skills
      */
     private List<String> skillIds;
-
-    /**
-     * 前端传入的会话上下文消息
-     */
-    private List<Map<String, Object>> messages;
 
     /**
      * 是否开启深度思考

@@ -1,6 +1,8 @@
 from collections.abc import AsyncIterator
+from io import BytesIO
 import json
 from json import JSONDecodeError
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -8,6 +10,7 @@ import httpx
 
 from app.models.events import StreamEventType, stream_event
 from app.models.schemas import AppChatStreamRequest, ModelConfig
+from app.services.context_builder import ContextBuilder
 from app.services.jeecg_client import JeecgClient
 from app.services.spec_service import SpecKitResult, generate_spec_with_speckit
 from app.skills import SkillRegistry
@@ -48,11 +51,13 @@ class ChatService:
         jeecg_client: JeecgClient | None = None,
         tool_registry: ToolRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
+        context_builder: ContextBuilder | None = None,
         spec_generator=generate_spec_with_speckit,
     ) -> None:
         self.jeecg_client = jeecg_client or JeecgClient()
         self.tool_registry = tool_registry or ToolRegistry()
         self.skill_registry = skill_registry or SkillRegistry()
+        self.context_builder = context_builder or ContextBuilder()
         self.spec_generator = spec_generator
 
     async def stream(self, request: AppChatStreamRequest) -> AsyncIterator[str]:
@@ -98,7 +103,7 @@ class ChatService:
                         request.input,
                     ):
                         yield event
-            messages = self._initial_messages(request)
+            messages = await self._initial_messages(request, model)
             async for item in self._stream_complete(model, request, messages, use_tools=True):
                 if isinstance(item, str):
                     yield stream_event(
@@ -261,7 +266,7 @@ class ChatService:
             model,
             request,
             stream=False,
-            messages=self._initial_messages(request),
+            messages=await self._initial_messages(request, model),
             use_tools=False,
         )
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -372,7 +377,7 @@ class ChatService:
             topic_id,
         )
 
-    def _initial_messages(self, request: AppChatStreamRequest) -> list[dict]:
+    async def _initial_messages(self, request: AppChatStreamRequest, model: ModelConfig | None = None) -> list[dict]:
         prompt = request.app.prompt or "你是 JeecgBoot AI 应用开发助手。请直接、准确地回答用户问题。"
         skill_prompt = self._skill_prompt(request.skill_ids)
         if skill_prompt:
@@ -383,11 +388,126 @@ class ChatService:
                 "联网搜索已开启。遇到实时信息、新闻、价格、版本、官方文档、网页资料或你不确定的信息时，"
                 "优先调用 web_search 工具；回答时要基于搜索结果总结，并尽量附上来源链接。"
             )
-        return [
-            {"role": "system", "content": prompt},
-            *self._context_messages(request),
-            {"role": "user", "content": request.input},
-        ]
+        current_user_content = await self._user_input_with_attachments(request)
+        if model is None:
+            model = ModelConfig(id="default", model_name="default", base_url="http://localhost")
+        return await self.context_builder.build(request, model, prompt, current_user_content)
+
+    async def _user_input_with_attachments(self, request: AppChatStreamRequest) -> str:
+        if not request.attachments:
+            return request.input
+        extracted_attachments = await self._extract_attachments(request)
+        lines = [request.input, "", "用户上传了以下附件，请优先结合可读取的附件正文回答："]
+        for index, attachment in enumerate(request.attachments, start=1):
+            name = attachment.name or "未命名附件"
+            file_type = attachment.type or "unknown"
+            size = attachment.size if attachment.size is not None else "unknown"
+            url = attachment.url or attachment.path or ""
+            lines.append(f"{index}. {name} | type={file_type} | size={size} | url={url}")
+            attachment_text = extracted_attachments.get(index - 1, "")
+            if attachment_text:
+                lines.append("```text")
+                lines.append(attachment_text)
+                lines.append("```")
+            else:
+                status = attachment.extraction_status or "unreadable"
+                error = attachment.extraction_error or "当前文件类型暂未解析出正文"
+                lines.append(f"附件读取状态：{status}，{error}")
+        return "\n".join(lines)
+
+    async def _extract_attachments(self, request: AppChatStreamRequest) -> dict[int, str]:
+        extracted: dict[int, str] = {}
+        for index, attachment in enumerate(request.attachments):
+            if attachment.extracted_text:
+                text = self._limit_attachment_text(attachment.extracted_text)
+                attachment.extracted_text = text
+                attachment.extraction_status = "provided"
+                extracted[index] = text
+                continue
+            try:
+                text = await self._extract_attachment_text(attachment)
+            except Exception as exc:
+                attachment.extraction_status = "failed"
+                attachment.extraction_error = str(exc)
+                continue
+            if text:
+                text = self._limit_attachment_text(text)
+                attachment.extracted_text = text
+                attachment.extraction_status = "extracted"
+                extracted[index] = text
+            else:
+                attachment.extraction_status = "empty"
+                attachment.extraction_error = "未读取到可用文本"
+        return extracted
+
+    async def _extract_attachment_text(self, attachment) -> str:
+        url = attachment.url or ""
+        if not url:
+            raise ValueError("附件缺少可读取 URL")
+        content = await self._download_attachment(url)
+        suffix = self._attachment_suffix(attachment)
+        if suffix in {".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml", ".log"}:
+            return self._decode_text(content)
+        if suffix == ".pdf":
+            return self._extract_pdf_text(content)
+        if suffix == ".docx":
+            return self._extract_docx_text(content)
+        if suffix == ".xlsx":
+            return self._extract_xlsx_text(content)
+        raise ValueError(f"暂不支持解析 {suffix or attachment.type or 'unknown'} 文件正文")
+
+    async def _download_attachment(self, url: str) -> bytes:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+
+    def _attachment_suffix(self, attachment) -> str:
+        name = attachment.name or attachment.path or attachment.url or ""
+        return Path(urlparse(name).path).suffix.lower()
+
+    def _decode_text(self, content: bytes) -> str:
+        for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+            try:
+                return content.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return content.decode("utf-8", errors="ignore")
+
+    def _extract_pdf_text(self, content: bytes) -> str:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(content))
+        texts = []
+        for page in reader.pages[:20]:
+            texts.append(page.extract_text() or "")
+        return "\n".join(texts)
+
+    def _extract_docx_text(self, content: bytes) -> str:
+        from docx import Document
+
+        document = Document(BytesIO(content))
+        return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text)
+
+    def _extract_xlsx_text(self, content: bytes) -> str:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        lines = []
+        for sheet in workbook.worksheets[:5]:
+            lines.append(f"# Sheet: {sheet.title}")
+            for row in sheet.iter_rows(max_row=200, values_only=True):
+                values = ["" if value is None else str(value) for value in row]
+                if any(values):
+                    lines.append("\t".join(values))
+        workbook.close()
+        return "\n".join(lines)
+
+    def _limit_attachment_text(self, text: str, limit: int = 20000) -> str:
+        normalized = text.replace("\x00", "").strip()
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}\n\n[附件正文已截断，仅保留前 {limit} 字符]"
 
     def _context_messages(self, request: AppChatStreamRequest) -> list[dict]:
         context_messages: list[dict] = []

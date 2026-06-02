@@ -90,6 +90,10 @@ def collect_stream(service: ChatService, request: AppChatStreamRequest) -> list[
     return asyncio.run(run())
 
 
+def initial_messages(service: ChatService, request: AppChatStreamRequest) -> list[dict]:
+    return asyncio.run(service._initial_messages(request))
+
+
 def parse_sse(event: str) -> dict:
     data = event.removeprefix("data:").strip()
     return json.loads(data)
@@ -142,7 +146,7 @@ def test_initial_messages_include_context_history():
         ],
     )
 
-    messages = ChatService(FakeJeecgClient())._initial_messages(request)
+    messages = initial_messages(ChatService(FakeJeecgClient()), request)
 
     assert messages == [
         {"role": "system", "content": "你是 JeecgBoot AI 应用开发助手。请直接、准确地回答用户问题。"},
@@ -185,7 +189,7 @@ def test_chat_stream_selected_skill_event_and_prompt():
 
     events = collect_stream(service, request)
     parsed_events = [parse_sse(event) for event in events]
-    messages = service._initial_messages(request)
+    messages = initial_messages(service, request)
 
     assert parsed_events[1]["event"] == "SKILL_SELECTED"
     assert parsed_events[1]["data"]["skillId"] == "jeecgboot-uniapp-template"
@@ -234,7 +238,7 @@ def test_model_request_filters_tools_by_skill():
         model,
         request,
         stream=True,
-        messages=service._initial_messages(request),
+        messages=initial_messages(service, request),
         use_tools=True,
     )
 
@@ -259,14 +263,14 @@ def test_model_request_exposes_web_search_only_when_enabled():
         model,
         request,
         stream=True,
-        messages=service._initial_messages(request),
+        messages=initial_messages(service, request),
         use_tools=True,
     )
     tool_names = [tool["function"]["name"] for tool in payload["tools"]]
 
     assert "web_search" in tool_names
     assert "extra_body" not in payload
-    assert "联网搜索已开启" in service._initial_messages(request)[0]["content"]
+    assert "联网搜索已开启" in initial_messages(service, request)[0]["content"]
 
 
 def test_chat_stream_error_event():

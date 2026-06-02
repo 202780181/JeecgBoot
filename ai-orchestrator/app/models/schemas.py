@@ -76,6 +76,52 @@ class ChatContextMessage(BaseModel):
     content: str
 
 
+class ChatAttachment(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    size: int | None = None
+    type: str | None = None
+    path: str | None = None
+    url: str | None = None
+    extracted_text: str | None = None
+    extraction_status: str | None = None
+    extraction_error: str | None = None
+
+
+class ContextSummary(BaseModel):
+    text: str | None = None
+    message_id: str | None = None
+    token_count: int | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class ContextMessage(BaseModel):
+    id: str | None = None
+    role: str
+    content: str = ""
+    token_count: int | None = None
+    metadata: dict = Field(default_factory=dict)
+    create_time: str | None = None
+
+
+class ContextFragment(BaseModel):
+    id: str | None = None
+    conversation_id: str | None = None
+    message_id: str | None = None
+    type: str
+    text: str = ""
+    token_count: int | None = None
+    metadata: dict = Field(default_factory=dict)
+    create_time: str | None = None
+
+
+class ContextSource(BaseModel):
+    summary: ContextSummary = Field(default_factory=ContextSummary)
+    recent_messages: list[ContextMessage] = Field(default_factory=list)
+    relevant_fragments: list[ContextFragment] = Field(default_factory=list)
+    attachment_summaries: list[ContextFragment] = Field(default_factory=list)
+
+
 class AppDebugRequest(BaseModel):
     app: AiAppConfig
     input: str = Field(min_length=1)
@@ -99,7 +145,9 @@ class AppChatStreamRequest(BaseModel):
     topic_id: str | None = None
     enable_search: bool = False
     skill_ids: list[str] = Field(default_factory=list)
+    attachments: list[ChatAttachment] = Field(default_factory=list)
     messages: list[ChatContextMessage] = Field(default_factory=list)
+    context_source: ContextSource = Field(default_factory=ContextSource)
     user_context: UserContext = Field(default_factory=UserContext)
 
 

@@ -15,9 +15,14 @@ import org.jeecg.config.shiro.IgnoreAuth;
 import org.jeecg.modules.airag.app.consts.AiAppConsts;
 import org.jeecg.modules.airag.app.entity.AiragApp;
 import org.jeecg.modules.airag.app.service.IAiOrchestratorService;
+import org.jeecg.modules.airag.app.service.IAiSdkConversationService;
 import org.jeecg.modules.airag.app.service.IAiragAppService;
 import org.jeecg.modules.airag.app.service.IAiragChatService;
 import org.jeecg.modules.airag.app.vo.AiArticleWriteVersionVo;
+import org.jeecg.modules.airag.app.vo.AiSdkConversationCreateParams;
+import org.jeecg.modules.airag.app.vo.AiSdkConversationRenameParams;
+import org.jeecg.modules.airag.app.vo.AiSdkConversationVo;
+import org.jeecg.modules.airag.app.vo.AiSdkMessageVo;
 import org.jeecg.modules.airag.app.vo.AppDebugParams;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -49,6 +54,9 @@ public class AiragAppController extends JeecgController<AiragApp, IAiragAppServi
 
     @Autowired
     private IAiOrchestratorService aiOrchestratorService;
+
+    @Autowired
+    private IAiSdkConversationService aiSdkConversationService;
 
     /**
      * 分页列表查询
@@ -218,6 +226,53 @@ public class AiragAppController extends JeecgController<AiragApp, IAiragAppServi
     @GetMapping(value = "/orchestrator/skills", produces = MediaType.APPLICATION_JSON_VALUE)
     public String skillsByOrchestrator() {
         return aiOrchestratorService.skills();
+    }
+
+    /**
+     * AI 应用开发页新建服务端会话。
+     */
+    @PostMapping(value = "/orchestrator/conversations")
+    public Result<AiSdkConversationVo> createAiSdkConversation(@RequestBody AiSdkConversationCreateParams params, HttpServletRequest request) {
+        return Result.OK(aiSdkConversationService.createConversation(params, request));
+    }
+
+    /**
+     * AI 应用开发页服务端会话列表。
+     */
+    @GetMapping(value = "/orchestrator/conversations")
+    public Result<List<AiSdkConversationVo>> listAiSdkConversations(@RequestParam(name = "sessionType", required = false) String sessionType,
+                                                                    HttpServletRequest request) {
+        return Result.OK(aiSdkConversationService.listConversations(sessionType, request));
+    }
+
+    /**
+     * AI 应用开发页服务端会话消息。
+     */
+    @GetMapping(value = "/orchestrator/conversations/{conversationId}/messages")
+    public Result<List<AiSdkMessageVo>> listAiSdkMessages(@PathVariable("conversationId") String conversationId,
+                                                          HttpServletRequest request) {
+        return Result.OK(aiSdkConversationService.listMessages(conversationId, request));
+    }
+
+    /**
+     * AI 应用开发页会话重命名。
+     */
+    @PutMapping(value = "/orchestrator/conversations/{conversationId}")
+    public Result<String> renameAiSdkConversation(@PathVariable("conversationId") String conversationId,
+                                                  @RequestBody AiSdkConversationRenameParams params,
+                                                  HttpServletRequest request) {
+        aiSdkConversationService.renameConversation(conversationId, params, request);
+        return Result.OK("保存成功");
+    }
+
+    /**
+     * AI 应用开发页删除服务端会话。
+     */
+    @DeleteMapping(value = "/orchestrator/conversations/{conversationId}")
+    public Result<String> deleteAiSdkConversation(@PathVariable("conversationId") String conversationId,
+                                                  HttpServletRequest request) {
+        aiSdkConversationService.deleteConversation(conversationId, request);
+        return Result.OK("删除成功");
     }
 
     /**
