@@ -90,6 +90,8 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
                     .setAppName(app.getName())
                     .setModelId(app.getModelId())
                     .setSummaryTokenCount(0)
+                    .setContextVersion(0)
+                    .setActiveContextTokenCount(0)
                     .setMetadataJson(buildConversationMetadata(request).toJSONString())
                     .setCreateTime(now)
                     .setUpdateTime(now);
@@ -101,7 +103,7 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
                 .setAppId(app.getId())
                 .setAppName(app.getName())
                 .setModelId(app.getModelId())
-                .setMetadataJson(buildConversationMetadata(request).toJSONString())
+                .setMetadataJson(mergeConversationMetadata(conversation.getMetadataJson(), buildConversationMetadata(request)).toJSONString())
                 .setUpdateTime(now);
         if (oConvertUtils.isEmpty(conversation.getTitle()) || "新建对话".equals(conversation.getTitle())) {
             conversation.setTitle(buildTitle(request.getContent()));
@@ -158,11 +160,11 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         Map<String, Object> contextSource = new HashMap<>();
         contextSource.put("summary", buildSummaryContext(conversation));
         contextSource.put("recent_messages", buildRecentMessageContext(conversationId, currentMessageId));
+        contextSource.put("relevant_messages", buildRelevantMessageContext(conversationId, currentMessageId, queryText));
         contextSource.put("relevant_fragments", buildRelevantFragmentContext(conversationId, currentMessageId, queryText));
-        contextSource.put(
-                "attachment_summaries",
-                shouldIncludeAttachmentSummaries(queryText) ? buildRecentFragmentContext(conversationId, currentMessageId, "attachment_summary") : new ArrayList<>()
-        );
+        contextSource.put("attachment_candidates", buildRecentFragmentContext(conversationId, currentMessageId, "attachment_summary"));
+        contextSource.put("attachment_matches", buildAttachmentMatchContext(conversationId, currentMessageId, queryText));
+        contextSource.put("attachment_summaries", new ArrayList<>());
         return contextSource;
     }
 
@@ -288,13 +290,13 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
     }
 
     @Override
-    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata, HttpServletRequest httpRequest) {
+    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, String activeContextSnapshot, Integer activeContextTokenCount, Map<String, Object> tokenLedger, Map<String, Object> metadata, HttpServletRequest httpRequest) {
         assertConversationOwner(conversationId, httpRequest);
-        updateConversationSummary(conversationId, summary, summaryMessageId, summaryTokenCount, metadata);
+        updateConversationSummary(conversationId, summary, summaryMessageId, summaryTokenCount, activeContextSnapshot, activeContextTokenCount, tokenLedger, metadata);
     }
 
     @Override
-    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata) {
+    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, String activeContextSnapshot, Integer activeContextTokenCount, Map<String, Object> tokenLedger, Map<String, Object> metadata) {
         AiSdkConversation conversation = getById(conversationId);
         if (conversation == null) {
             throw new JeecgBootException("会话不存在或无权访问");
@@ -303,10 +305,29 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         if (metadata != null) {
             conversationMetadata.put("contextSummary", metadata);
         }
+        JSONObject ledgerJson = tokenLedger == null ? new JSONObject() : new JSONObject(tokenLedger);
+        if (!ledgerJson.isEmpty()) {
+            conversationMetadata.put("contextLedger", ledgerJson);
+        }
+        int nextContextVersion = (conversation.getContextVersion() == null ? 0 : conversation.getContextVersion()) + 1;
+        conversationMetadata.put("contextVersion", nextContextVersion);
+        conversationMetadata.put("activeContextSnapshotVersion", metadata == null ? 1 : oConvertUtils.getInt(metadata.get("activeContextSnapshotVersion"), 1));
+        int resolvedSummaryTokenCount = summaryTokenCount == null ? estimateTokenCount(summary) : summaryTokenCount;
+        String resolvedSnapshot = oConvertUtils.isNotEmpty(activeContextSnapshot) ? activeContextSnapshot : summary;
+        int resolvedSnapshotTokenCount = activeContextTokenCount == null ? estimateTokenCount(resolvedSnapshot) : activeContextTokenCount;
         conversation
                 .setSummary(summary)
                 .setSummaryMessageId(summaryMessageId)
-                .setSummaryTokenCount(summaryTokenCount == null ? estimateTokenCount(summary) : summaryTokenCount)
+                .setSummaryTokenCount(resolvedSummaryTokenCount)
+                .setContextVersion(nextContextVersion)
+                .setActiveContextSnapshot(resolvedSnapshot)
+                .setActiveContextTokenCount(resolvedSnapshotTokenCount)
+                .setLastModelInputTokens(getLedgerInteger(ledgerJson, "lastModelInputTokens"))
+                .setLastModelOutputTokens(getLedgerInteger(ledgerJson, "lastModelOutputTokens"))
+                .setLastModelTotalTokens(getLedgerInteger(ledgerJson, "lastModelTotalTokens"))
+                .setEstimatedAddedTokens(getLedgerInteger(ledgerJson, "estimatedAddedTokens"))
+                .setContextWindow(getLedgerInteger(ledgerJson, "contextWindow"))
+                .setCompactThresholdTokens(getLedgerInteger(ledgerJson, "compactThresholdTokens"))
                 .setMetadataJson(conversationMetadata.toJSONString())
                 .setUpdateTime(new Date());
         updateById(conversation);
@@ -327,6 +348,8 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
                 .setAppName(oConvertUtils.getString(params.getAppName(), "JeecgBoot AI 助手"))
                 .setModelId(params.getModelId())
                 .setSummaryTokenCount(0)
+                .setContextVersion(0)
+                .setActiveContextTokenCount(0)
                 .setMetadataJson(buildConversationMetadata(params).toJSONString())
                 .setCreateTime(now)
                 .setUpdateTime(now);
@@ -418,6 +441,14 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         return metadata;
     }
 
+    private JSONObject mergeConversationMetadata(String metadataJson, JSONObject update) {
+        JSONObject metadata = parseMetadataObject(metadataJson);
+        if (update != null && !update.isEmpty()) {
+            metadata.putAll(update);
+        }
+        return metadata;
+    }
+
     private JSONObject buildConversationMetadata(AiSdkConversationCreateParams params) {
         JSONObject metadata = new JSONObject();
         metadata.put("skillIds", params.getSkillIds());
@@ -459,10 +490,16 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
 
     private Map<String, Object> buildSummaryContext(AiSdkConversation conversation) {
         Map<String, Object> summary = new HashMap<>();
-        summary.put("text", oConvertUtils.getString(conversation.getSummary()));
+        boolean hasActiveSnapshot = oConvertUtils.isNotEmpty(conversation.getActiveContextSnapshot());
+        summary.put("text", hasActiveSnapshot ? conversation.getActiveContextSnapshot() : oConvertUtils.getString(conversation.getSummary()));
         summary.put("messageId", conversation.getSummaryMessageId());
-        summary.put("tokenCount", conversation.getSummaryTokenCount());
-        summary.put("metadata", parseMetadata(conversation.getMetadataJson()));
+        summary.put("tokenCount", hasActiveSnapshot ? conversation.getActiveContextTokenCount() : conversation.getSummaryTokenCount());
+        summary.put("contextVersion", conversation.getContextVersion());
+        JSONObject metadata = parseMetadataObject(conversation.getMetadataJson());
+        metadata.put("contextMode", hasActiveSnapshot ? "active_snapshot" : "summary");
+        metadata.put("contextVersion", conversation.getContextVersion());
+        metadata.put("activeContextTokenCount", conversation.getActiveContextTokenCount());
+        summary.put("metadata", metadata);
         return summary;
     }
 
@@ -478,17 +515,70 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         List<AiSdkMessage> messages = aiSdkMessageMapper.selectList(query);
         List<Map<String, Object>> result = new ArrayList<>();
         for (int i = messages.size() - 1; i >= 0; i--) {
-            AiSdkMessage message = messages.get(i);
-            Map<String, Object> item = new HashMap<>();
-            item.put("id", message.getId());
-            item.put("role", message.getRole());
-            item.put("content", trimText(message.getContent(), 4000));
-            item.put("tokenCount", message.getTokenCount());
-            item.put("metadata", parseMetadata(message.getMetadataJson()));
-            item.put("createTime", message.getCreateTime());
-            result.add(item);
+            result.add(toMessageContext(messages.get(i), 4000));
         }
         return result;
+    }
+
+    private List<Map<String, Object>> buildRelevantMessageContext(String conversationId, String currentMessageId, String queryText) {
+        List<String> keywords = extractKeywords(queryText);
+        if (keywords.isEmpty()) {
+            return new ArrayList<>();
+        }
+        LambdaQueryWrapper<AiSdkMessage> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkMessage::getConversationId, conversationId);
+        if (oConvertUtils.isNotEmpty(currentMessageId)) {
+            query.ne(AiSdkMessage::getId, currentMessageId);
+        }
+        query.in(AiSdkMessage::getRole, "user", "assistant");
+        query.orderByDesc(AiSdkMessage::getCreateTime);
+        query.last("LIMIT 200");
+        List<ScoredMessage> scored = new ArrayList<>();
+        for (AiSdkMessage message : aiSdkMessageMapper.selectList(query)) {
+            int score = scoreMessage(message, keywords);
+            if (score > 0) {
+                scored.add(new ScoredMessage(message, score));
+            }
+        }
+        scored.sort((a, b) -> {
+            int scoreCompare = Integer.compare(b.score, a.score);
+            if (scoreCompare != 0) {
+                return scoreCompare;
+            }
+            Date aTime = a.message.getCreateTime();
+            Date bTime = b.message.getCreateTime();
+            if (aTime == null && bTime == null) return 0;
+            if (aTime == null) return 1;
+            if (bTime == null) return -1;
+            return bTime.compareTo(aTime);
+        });
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ScoredMessage item : scored.subList(0, Math.min(scored.size(), 8))) {
+            Map<String, Object> row = toMessageContext(item.message, 4000);
+            row.put("score", item.score);
+            row.put("retrieval", "keyword_message");
+            result.add(row);
+        }
+        result.sort((a, b) -> {
+            Object aTime = a.get("createTime");
+            Object bTime = b.get("createTime");
+            if (aTime instanceof Date ad && bTime instanceof Date bd) {
+                return ad.compareTo(bd);
+            }
+            return 0;
+        });
+        return result;
+    }
+
+    private Map<String, Object> toMessageContext(AiSdkMessage message, int contentLimit) {
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", message.getId());
+        item.put("role", message.getRole());
+        item.put("content", trimText(message.getContent(), contentLimit));
+        item.put("tokenCount", message.getTokenCount());
+        item.put("metadata", parseMetadata(message.getMetadataJson()));
+        item.put("createTime", message.getCreateTime());
+        return item;
     }
 
     private List<Map<String, Object>> buildRecentFragmentContext(String conversationId, String currentMessageId, String type) {
@@ -608,22 +698,79 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         }
     }
 
-    private boolean shouldIncludeAttachmentSummaries(String queryText) {
-        String text = oConvertUtils.getString(queryText).toLowerCase();
-        if (text.isEmpty()) {
-            return false;
+    private List<Map<String, Object>> buildAttachmentMatchContext(String conversationId, String currentMessageId, String queryText) {
+        List<Map<String, Object>> embeddingResult = buildEmbeddingAttachmentContext(conversationId, currentMessageId, queryText);
+        if (!embeddingResult.isEmpty()) {
+            return embeddingResult;
         }
-        String[] keywords = new String[] {
-                "附件", "文件", "上传", "刚才", "之前", "上次", "历史", "文档",
-                ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv",
-                "attachment", "file", "document", "uploaded", "previous"
-        };
-        for (String keyword : keywords) {
-            if (text.contains(keyword)) {
-                return true;
+        List<String> keywords = extractKeywords(queryText);
+        if (keywords.isEmpty()) {
+            return new ArrayList<>();
+        }
+        LambdaQueryWrapper<AiSdkContextFragment> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkContextFragment::getConversationId, conversationId);
+        query.eq(AiSdkContextFragment::getType, "attachment_summary");
+        if (oConvertUtils.isNotEmpty(currentMessageId)) {
+            query.ne(AiSdkContextFragment::getMessageId, currentMessageId);
+        }
+        query.orderByDesc(AiSdkContextFragment::getCreateTime);
+        query.last("LIMIT 100");
+        List<ScoredFragment> scored = new ArrayList<>();
+        for (AiSdkContextFragment fragment : aiSdkContextFragmentMapper.selectList(query)) {
+            int score = scoreFragment(fragment, keywords);
+            if (score > 0) {
+                scored.add(new ScoredFragment(fragment, score));
             }
         }
-        return false;
+        scored.sort((a, b) -> Integer.compare(b.score, a.score));
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ScoredFragment item : scored.subList(0, Math.min(scored.size(), 10))) {
+            Map<String, Object> row = toFragmentContext(item.fragment);
+            row.put("score", Math.min(1.0, item.score / 10.0));
+            row.put("retrieval", "keyword_attachment");
+            result.add(row);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> buildEmbeddingAttachmentContext(String conversationId, String currentMessageId, String queryText) {
+        if (!orchestratorProperties.isContextEmbeddingEnabled() || oConvertUtils.isEmpty(queryText)) {
+            return new ArrayList<>();
+        }
+        try {
+            List<Map<String, Object>> matches = embeddingHandler.searchAiSdkContextFragments(
+                    resolveContextEmbedModelId(),
+                    conversationId,
+                    queryText,
+                    orchestratorProperties.getContextEmbeddingTopNumber(),
+                    orchestratorProperties.getContextEmbeddingSimilarity()
+            );
+            List<Map<String, Object>> result = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (Map<String, Object> match : matches) {
+                String fragmentId = oConvertUtils.getString(match.get(EmbeddingHandler.EMBED_STORE_METADATA_FRAGMENT_ID));
+                if (oConvertUtils.isEmpty(fragmentId) || !seen.add(fragmentId)) {
+                    continue;
+                }
+                AiSdkContextFragment fragment = aiSdkContextFragmentMapper.selectById(fragmentId);
+                if (fragment == null || !conversationId.equals(fragment.getConversationId())) {
+                    continue;
+                }
+                if (oConvertUtils.isNotEmpty(currentMessageId) && currentMessageId.equals(fragment.getMessageId())) {
+                    continue;
+                }
+                if (!"attachment_summary".equals(fragment.getType())) {
+                    continue;
+                }
+                Map<String, Object> row = toFragmentContext(fragment);
+                row.put("score", match.get("score"));
+                row.put("retrieval", "pgvector_attachment");
+                result.add(row);
+            }
+            return result;
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
     }
 
     private String resolveContextEmbedModelId() {
@@ -755,6 +902,20 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         return score;
     }
 
+    private int scoreMessage(AiSdkMessage message, List<String> keywords) {
+        String haystack = (oConvertUtils.getString(message.getContent()) + " " + oConvertUtils.getString(message.getMetadataJson())).toLowerCase();
+        int score = 0;
+        for (String keyword : keywords) {
+            if (haystack.contains(keyword)) {
+                score += keyword.length();
+            }
+        }
+        if ("user".equals(message.getRole())) {
+            score += 2;
+        }
+        return score;
+    }
+
     private void rebuildContextFragments(AiSdkMessage message) {
         LambdaQueryWrapper<AiSdkContextFragment> deleteQuery = new LambdaQueryWrapper<>();
         deleteQuery.eq(AiSdkContextFragment::getMessageId, message.getId());
@@ -766,6 +927,7 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         appendToolResultFragments(fragments, message, metadata.getJSONArray("toolResults"));
         appendSourceFragments(fragments, message, metadata.getJSONArray("sources"));
         appendSkillFragments(fragments, message, metadata.getJSONArray("skillEvents"));
+        appendContextSelectionFragments(fragments, message, metadata.getJSONArray("contextEvents"));
         appendErrorFragments(fragments, message, metadata.getJSONArray("errors"));
         for (AiSdkContextFragment fragment : fragments) {
             aiSdkContextFragmentMapper.insert(fragment);
@@ -888,6 +1050,52 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         }
     }
 
+    private void appendContextSelectionFragments(List<AiSdkContextFragment> fragments, AiSdkMessage message, JSONArray contextEvents) {
+        if (contextEvents == null || contextEvents.isEmpty()) {
+            return;
+        }
+        for (Object item : contextEvents) {
+            JSONObject contextEvent = toJsonObject(item);
+            if (contextEvent == null) {
+                continue;
+            }
+            JSONObject selection = contextEvent.getJSONObject("attachmentSelection");
+            JSONObject contextSelection = contextEvent.getJSONObject("contextSelection");
+            if (selection == null) {
+                selection = contextEvent.getJSONObject("data");
+                if (selection != null) {
+                    contextSelection = selection.getJSONObject("contextSelection");
+                    selection = selection.getJSONObject("attachmentSelection");
+                }
+            }
+            if (selection == null && contextSelection == null) {
+                continue;
+            }
+            JSONObject ledger = contextSelection == null ? null : contextSelection.getJSONObject("tokenLedger");
+            String text = "上下文选择：";
+            if (ledger != null) {
+                text += "selectedFragmentCount=" + oConvertUtils.getString(ledger.get("selectedFragmentCount"))
+                        + "，selectedRecentMessageCount=" + oConvertUtils.getString(ledger.get("selectedRecentMessageCount"))
+                        + "，estimatedContextInputTokens=" + oConvertUtils.getString(ledger.get("estimatedContextInputTokens"));
+            }
+            if (selection != null) {
+                text += "\n附件选择：includeAttachments=" + selection.getBooleanValue("includeAttachments")
+                        + "，reason=" + oConvertUtils.getString(selection.getString("reason"))
+                        + "，candidateCount=" + oConvertUtils.getString(selection.get("candidateCount"))
+                        + "，selectedTokenCount=" + oConvertUtils.getString(selection.get("selectedTokenCount"));
+            }
+            JSONArray targetFiles = selection == null ? null : selection.getJSONArray("targetFiles");
+            if (targetFiles != null && !targetFiles.isEmpty()) {
+                text += "\n选中文件：" + targetFiles.toJSONString();
+            }
+            JSONObject metadata = contextSelection == null ? new JSONObject() : contextSelection;
+            if (selection != null) {
+                metadata.put("attachmentSelection", selection);
+            }
+            fragments.add(buildFragment(message, "context_selection", text, metadata));
+        }
+    }
+
     private AiSdkContextFragment buildFragment(AiSdkMessage message, String type, String text, JSONObject metadata) {
         String content = trimText(oConvertUtils.getString(text), 4000);
         return new AiSdkContextFragment()
@@ -911,6 +1119,13 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         } catch (Exception e) {
             return new JSONObject();
         }
+    }
+
+    private Integer getLedgerInteger(JSONObject ledger, String key) {
+        if (ledger == null || !ledger.containsKey(key)) {
+            return 0;
+        }
+        return oConvertUtils.getInt(ledger.get(key), 0);
     }
 
     private JSONObject toJsonObject(Object item) {
@@ -1103,6 +1318,16 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
 
         private ScoredFragment(AiSdkContextFragment fragment, int score) {
             this.fragment = fragment;
+            this.score = score;
+        }
+    }
+
+    private static class ScoredMessage {
+        private final AiSdkMessage message;
+        private final int score;
+
+        private ScoredMessage(AiSdkMessage message, int score) {
+            this.message = message;
             this.score = score;
         }
     }

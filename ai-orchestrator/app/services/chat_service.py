@@ -104,6 +104,20 @@ class ChatService:
                     ):
                         yield event
             messages = await self._initial_messages(request, model)
+            context_metadata = request.context_source.summary.metadata or {}
+            context_selection = context_metadata.get("contextSelection")
+            attachment_selection = context_metadata.get("attachmentSelection")
+            if self._should_emit_context_selection(context_selection):
+                yield stream_event(
+                    request_id,
+                    StreamEventType.CONTEXT_SELECTED,
+                    {
+                        "contextSelection": context_selection,
+                        "attachmentSelection": attachment_selection,
+                    },
+                    conversation_id,
+                    topic_id,
+                )
             async for item in self._stream_complete(model, request, messages, use_tools=True):
                 if isinstance(item, str):
                     yield stream_event(
@@ -273,6 +287,20 @@ class ChatService:
             response = await client.post(endpoint, json=payload, headers=headers)
         self._raise_for_bad_model_response(response, endpoint)
         return self._extract_completion_text(self._parse_model_response(response, endpoint), endpoint)
+
+    def _should_emit_context_selection(self, context_selection: dict | None) -> bool:
+        if not context_selection:
+            return False
+        token_ledger = context_selection.get("tokenLedger") or {}
+        if int(token_ledger.get("selectedFragmentCount") or 0) > 0:
+            return True
+        if int(token_ledger.get("selectedRecentMessageCount") or 0) > 0:
+            return True
+        return (
+            (context_selection.get("attachmentSelection") or {}).get("includeAttachments") is True
+            or bool((context_selection.get("attachmentSelection") or {}).get("targetFiles"))
+            or int((context_selection.get("attachmentSelection") or {}).get("candidateCount") or 0) > 0
+        )
 
     async def _run_skill_spec_kit(
         self,

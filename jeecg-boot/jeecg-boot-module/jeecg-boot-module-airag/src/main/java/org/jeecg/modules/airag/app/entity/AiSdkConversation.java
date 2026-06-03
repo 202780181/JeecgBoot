@@ -61,6 +61,33 @@ public class AiSdkConversation implements Serializable {
     @Schema(description = "摘要Token数")
     private Integer summaryTokenCount;
 
+    @Schema(description = "上下文版本")
+    private Integer contextVersion;
+
+    @Schema(description = "活跃上下文快照")
+    private String activeContextSnapshot;
+
+    @Schema(description = "活跃上下文Token数")
+    private Integer activeContextTokenCount;
+
+    @Schema(description = "最近模型输入Token数")
+    private Integer lastModelInputTokens;
+
+    @Schema(description = "最近模型输出Token数")
+    private Integer lastModelOutputTokens;
+
+    @Schema(description = "最近模型总Token数")
+    private Integer lastModelTotalTokens;
+
+    @Schema(description = "估算新增Token数")
+    private Integer estimatedAddedTokens;
+
+    @Schema(description = "上下文窗口")
+    private Integer contextWindow;
+
+    @Schema(description = "压缩阈值Token数")
+    private Integer compactThresholdTokens;
+
     @Schema(description = "元数据JSON")
     private String metadataJson;
 

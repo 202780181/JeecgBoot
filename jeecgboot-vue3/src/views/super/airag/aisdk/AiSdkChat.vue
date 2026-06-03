@@ -79,7 +79,7 @@
 
 <script setup lang="ts">
 import { type $Transition } from 'motion-v';
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Icon from '@/components/Icon';
 import { usePageContext } from '@/hooks/component/usePageContext';
 import { useMessage } from '@/hooks/web/useMessage';
@@ -148,7 +148,7 @@ const { clearCodeBlockCopyTimers, handleCodeBlockCopyClick } = useCodeBlockCopy(
   onError: (message) => createMessage.warning(message),
 });
 const pageContext = usePageContext();
-const { scrollToBottom } = useAutoScroll(messageBoxRef);
+const { scrollToBottom, scrollToBottomIfPinned } = useAutoScroll(messageBoxRef);
 const { attachments, addAttachments, clearAttachments, formatFileSize, removeAttachment } = useComposerAttachments();
 const { 
   addMessage, 
@@ -257,6 +257,14 @@ const {
   },
   onError: (message) => createMessage.warning(message),
 });
+
+watch(
+  () => chat.messages,
+  () => {
+    void scrollToBottomIfPinned();
+  },
+  { deep: true }
+);
 
 function getMessageSkills(message: AiSdkUIMessage): AiSdkMessageSkill[] {
   const skills = message.metadata?.skills;
@@ -569,7 +577,7 @@ async function sendRequirement() {
   const assistantId = addThinkingMessage();
   const abortController = new AbortController();
   streamAbortController.value = abortController;
-  await scrollToBottom();
+  await scrollToBottomIfPinned();
   try {
     const stream = await debugAssistant({
       conversationId,

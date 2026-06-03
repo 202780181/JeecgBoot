@@ -43,9 +43,9 @@ public interface IAiSdkConversationService extends IService<AiSdkConversation> {
 
     Map<String, Object> buildCompactionSource(String conversationId, String currentMessageId);
 
-    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata, HttpServletRequest httpRequest);
+    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, String activeContextSnapshot, Integer activeContextTokenCount, Map<String, Object> tokenLedger, Map<String, Object> metadata, HttpServletRequest httpRequest);
 
-    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata);
+    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, String activeContextSnapshot, Integer activeContextTokenCount, Map<String, Object> tokenLedger, Map<String, Object> metadata);
 
     AiSdkConversationVo createConversation(AiSdkConversationCreateParams params, HttpServletRequest httpRequest);
 

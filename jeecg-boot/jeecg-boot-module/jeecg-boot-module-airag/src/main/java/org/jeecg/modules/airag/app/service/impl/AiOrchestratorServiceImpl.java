@@ -237,9 +237,21 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
                 if (tokenCount == null) {
                     tokenCount = response.getInteger("token_count");
                 }
+                String activeContextSnapshot = response.getString("activeContextSnapshot");
+                if (activeContextSnapshot == null) {
+                    activeContextSnapshot = response.getString("active_context_snapshot");
+                }
+                Integer activeContextTokenCount = response.getInteger("activeContextTokenCount");
+                if (activeContextTokenCount == null) {
+                    activeContextTokenCount = response.getInteger("active_context_token_count");
+                }
+                JSONObject tokenLedger = response.getJSONObject("tokenLedger");
+                if (tokenLedger == null) {
+                    tokenLedger = response.getJSONObject("token_ledger");
+                }
                 JSONObject metadata = response.getJSONObject("metadata");
-                aiSdkConversationService.updateConversationSummary(conversationId, summaryText, summaryMessageId, tokenCount, metadata);
-                log.info("上下文压缩完成，conversationId={}, summaryMessageId={}, tokenCount={}", conversationId, summaryMessageId, tokenCount);
+                aiSdkConversationService.updateConversationSummary(conversationId, summaryText, summaryMessageId, tokenCount, activeContextSnapshot, activeContextTokenCount, tokenLedger, metadata);
+                log.info("上下文压缩完成，conversationId={}, summaryMessageId={}, tokenCount={}, activeContextTokenCount={}", conversationId, summaryMessageId, tokenCount, activeContextTokenCount);
             } finally {
                 if (compactConnection != null) {
                     compactConnection.disconnect();
@@ -386,6 +398,7 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         private final List<JSONObject> toolResults = new ArrayList<>();
         private final List<JSONObject> sources = new ArrayList<>();
         private final List<JSONObject> skillEvents = new ArrayList<>();
+        private final List<JSONObject> contextEvents = new ArrayList<>();
         private final List<JSONObject> errors = new ArrayList<>();
         private final Set<String> sourceKeys = new HashSet<>();
         private final JSONObject model = new JSONObject();
@@ -420,6 +433,10 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
                 addEventPayload(skillEvents, eventData, data);
                 return;
             }
+            if ("CONTEXT_SELECTED".equals(event)) {
+                addEventPayload(contextEvents, eventData, data);
+                return;
+            }
             if ("ERROR".equals(event)) {
                 addEventPayload(errors, eventData, data);
             }
@@ -438,6 +455,7 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
             metadata.put("toolResults", toolResults);
             metadata.put("sources", sources);
             metadata.put("skillEvents", skillEvents);
+            metadata.put("contextEvents", contextEvents);
             metadata.put("attachments", attachments == null ? new ArrayList<>() : attachments);
             metadata.put("model", model);
             metadata.put("params", params);

@@ -39,19 +39,195 @@ class ContextCompactor:
         summary = await self._complete_json(model, prompt)
         summary_text = json.dumps(summary.model_dump(), ensure_ascii=False, indent=2)
         latest_message_id = self._latest_message_id(request)
+        active_context_snapshot = self._build_active_context_snapshot(request, summary, latest_message_id)
+        active_context_token_count = self.token_counter.count(active_context_snapshot)
+        summary_token_count = self.token_counter.count(summary_text)
+        token_ledger = self._build_token_ledger(
+            request=request,
+            model=model,
+            summary_token_count=summary_token_count,
+            active_context_token_count=active_context_token_count,
+            latest_message_id=latest_message_id,
+        )
         return ContextCompactionResponse(
             summaryText=summary_text,
             summaryMessageId=latest_message_id,
-            tokenCount=self.token_counter.count(summary_text),
+            tokenCount=summary_token_count,
+            activeContextSnapshot=active_context_snapshot,
+            activeContextTokenCount=active_context_token_count,
+            tokenLedger=token_ledger,
             metadata={
                 "summaryVersion": 1,
                 "summaryType": "structured_conversation_summary",
+                "activeContextSnapshotVersion": 1,
                 "messageCount": len(request.context_source.messages),
                 "fragmentCount": len(request.context_source.fragments),
                 "modelId": model.id,
                 "modelName": model.model_name,
+                "tokenLedger": token_ledger,
             },
         )
+
+    def _build_active_context_snapshot(
+        self,
+        request: ContextCompactionRequest,
+        summary: StructuredConversationSummary,
+        latest_message_id: str | None,
+    ) -> str:
+        snapshot = {
+            "snapshotType": "active_context_snapshot",
+            "snapshotVersion": 1,
+            "conversationId": request.conversation_id,
+            "summaryMessageId": latest_message_id,
+            "summary": summary.model_dump(),
+            "availableFiles": self._available_files(request),
+            "activeFiles": self._active_files(request),
+            "retainedMessages": self._retained_messages(request),
+            "retainedFragments": self._retained_fragments(request),
+        }
+        return json.dumps(snapshot, ensure_ascii=False, indent=2)
+
+    def _retained_messages(self, request: ContextCompactionRequest) -> list[dict]:
+        retained = []
+        for message in request.context_source.messages[-8:]:
+            if message.role not in {"user", "assistant"}:
+                continue
+            content = (message.content or "").strip()
+            if not content:
+                continue
+            retained.append(
+                {
+                    "id": message.id,
+                    "role": message.role,
+                    "content": self._truncate(content, 1200),
+                    "tokenCount": message.token_count,
+                    "createTime": message.create_time,
+                }
+            )
+        return retained
+
+    def _retained_fragments(self, request: ContextCompactionRequest) -> list[dict]:
+        priority = {
+            "attachment_summary": 100,
+            "skill_result": 90,
+            "tool_result": 80,
+            "source": 70,
+            "error": 60,
+        }
+        fragments = [
+            fragment
+            for fragment in request.context_source.fragments
+            if (fragment.text or "").strip() and fragment.type != "attachment_summary"
+        ]
+        fragments.sort(
+            key=lambda fragment: (
+                priority.get(fragment.type, 10),
+                fragment.create_time or "",
+            ),
+            reverse=True,
+        )
+        retained = []
+        for fragment in fragments[:12]:
+            retained.append(
+                {
+                    "id": fragment.id,
+                    "messageId": fragment.message_id,
+                    "type": fragment.type,
+                    "text": self._truncate(fragment.text, 1200),
+                    "tokenCount": fragment.token_count,
+                    "metadata": fragment.metadata,
+                    "createTime": fragment.create_time,
+                }
+            )
+        return retained
+
+    def _available_files(self, request: ContextCompactionRequest) -> list[dict]:
+        files = []
+        seen: set[str] = set()
+        for fragment in request.context_source.fragments:
+            if fragment.type != "attachment_summary":
+                continue
+            metadata = fragment.metadata or {}
+            file_id = self._file_identifier(fragment)
+            if file_id in seen:
+                continue
+            seen.add(file_id)
+            files.append(
+                {
+                    "fileId": file_id,
+                    "name": metadata.get("name") or file_id,
+                    "messageId": fragment.message_id,
+                    "createdAt": fragment.create_time,
+                    "summary": self._truncate(fragment.text, 400),
+                }
+            )
+        return files[:20]
+
+    def _active_files(self, request: ContextCompactionRequest) -> list[dict]:
+        previous = request.context_source.previous_summary.metadata or {}
+        selection = previous.get("attachmentSelection") or {}
+        selected_files = selection.get("targetFiles") or []
+        if not selected_files:
+            return []
+        return [
+            {
+                "fileId": str(file_id),
+                "whyActive": selection.get("reason") or "selected_by_attachment_router",
+            }
+            for file_id in selected_files[:10]
+        ]
+
+    def _file_identifier(self, fragment) -> str:
+        metadata = fragment.metadata or {}
+        for key in ("id", "fileId", "file_id", "url", "path", "name"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return fragment.id or fragment.message_id or "unknown"
+
+    def _build_token_ledger(
+        self,
+        *,
+        request: ContextCompactionRequest,
+        model: ModelConfig,
+        summary_token_count: int,
+        active_context_token_count: int,
+        latest_message_id: str | None,
+    ) -> dict:
+        message_tokens = sum(
+            message.token_count if message.token_count is not None else self.token_counter.count(message.content)
+            for message in request.context_source.messages
+        )
+        fragment_tokens = sum(
+            fragment.token_count if fragment.token_count is not None else self.token_counter.count(fragment.text)
+            for fragment in request.context_source.fragments
+        )
+        params = model.model_params or {}
+        context_window = self._int_param(params, ("contextWindow", "context_window", "maxContextTokens"), 0)
+        max_output_tokens = self._int_param(params, ("maxOutputTokens", "max_output_tokens", "maxTokens", "max_tokens"), 0)
+        reasoning_reserve = self._int_param(params, ("reasoningReserve", "reasoning_reserve"), 0)
+        safety_margin = self._int_param(params, ("safetyMargin", "safety_margin"), 0)
+        compact_threshold_tokens = self._int_param(params, ("compactThresholdTokens", "compact_threshold_tokens"), 0)
+        estimated_added_tokens = message_tokens + fragment_tokens
+        return {
+            "summaryMessageId": latest_message_id,
+            "summaryTokenCount": summary_token_count,
+            "activeContextTokenCount": active_context_token_count,
+            "compactedMessageCount": len(request.context_source.messages),
+            "compactedFragmentCount": len(request.context_source.fragments),
+            "compactedMessageTokens": message_tokens,
+            "compactedFragmentTokens": fragment_tokens,
+            "estimatedAddedTokens": estimated_added_tokens,
+            "lastModelInputTokens": estimated_added_tokens,
+            "lastModelOutputTokens": summary_token_count,
+            "lastModelTotalTokens": estimated_added_tokens + summary_token_count,
+            "contextWindow": context_window,
+            "maxOutputTokens": max_output_tokens,
+            "reasoningReserve": reasoning_reserve,
+            "safetyMargin": safety_margin,
+            "compactThresholdTokens": compact_threshold_tokens,
+            "attachmentSelection": (request.context_source.previous_summary.metadata or {}).get("attachmentSelection") or {},
+        }
 
     def _build_prompt(self, request: ContextCompactionRequest) -> str:
         payload = {
@@ -223,6 +399,17 @@ class ContextCompactor:
         if isinstance(value, (int, float, bool)):
             return str(value)
         return json.dumps(value, ensure_ascii=False)
+
+    def _int_param(self, params: dict, keys: tuple[str, ...], default: int) -> int:
+        for key in keys:
+            value = params.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return default
 
     def _latest_message_id(self, request: ContextCompactionRequest) -> str | None:
         for message in reversed(request.context_source.messages):

@@ -94,6 +94,7 @@ class ContextSummary(BaseModel):
     text: str | None = None
     message_id: str | None = Field(default=None, alias="messageId")
     token_count: int | None = Field(default=None, alias="tokenCount")
+    context_version: int | None = Field(default=None, alias="contextVersion")
     metadata: dict = Field(default_factory=dict)
 
 
@@ -124,8 +125,11 @@ class ContextFragment(BaseModel):
 class ContextSource(BaseModel):
     summary: ContextSummary = Field(default_factory=ContextSummary)
     recent_messages: list[ContextMessage] = Field(default_factory=list)
+    relevant_messages: list[ContextMessage] = Field(default_factory=list)
     relevant_fragments: list[ContextFragment] = Field(default_factory=list)
     attachment_summaries: list[ContextFragment] = Field(default_factory=list)
+    attachment_candidates: list[ContextFragment] = Field(default_factory=list)
+    attachment_matches: list[ContextFragment] = Field(default_factory=list)
 
 
 class AppDebugRequest(BaseModel):
@@ -176,6 +180,9 @@ class ContextCompactionResponse(BaseModel):
     summary_text: str = Field(alias="summaryText")
     summary_message_id: str | None = Field(default=None, alias="summaryMessageId")
     token_count: int = Field(alias="tokenCount")
+    active_context_snapshot: str = Field(alias="activeContextSnapshot")
+    active_context_token_count: int = Field(alias="activeContextTokenCount")
+    token_ledger: dict = Field(default_factory=dict, alias="tokenLedger")
     metadata: dict = Field(default_factory=dict)
 
 

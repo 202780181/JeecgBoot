@@ -1,6 +1,6 @@
 import asyncio
 
-from app.models.schemas import AiAppConfig, AppChatStreamRequest, ContextFragment, ContextMessage, ContextSource, ModelConfig
+from app.models.schemas import AiAppConfig, AppChatStreamRequest, ContextFragment, ContextMessage, ContextSource, ContextSummary, ModelConfig
 from app.services.context_builder import ContextBuilder
 
 
@@ -44,7 +44,29 @@ def test_context_builder_keeps_required_messages_under_small_budget():
     assert messages[-1] == {"role": "user", "content": "当前输入必须保留"}
 
 
-def test_context_builder_dedupes_fragments_by_url_and_prioritizes_attachments():
+def test_context_builder_uses_active_context_snapshot_as_summary_context():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="继续做下一步",
+        context_source=ContextSource(
+            summary=ContextSummary(
+                text='{"snapshotType":"active_context_snapshot","summary":{"objective":"上下文管理"}}',
+                contextVersion=3,
+                tokenCount=20,
+                metadata={"contextMode": "active_snapshot"},
+            ),
+        ),
+    )
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    messages = build_messages(request, model)
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "活跃上下文快照（context_version=3）" in joined
+    assert "active_context_snapshot" in joined
+
+
+def test_context_builder_dedupes_fragments_by_url():
     request = AppChatStreamRequest(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="总结上下文",
@@ -52,10 +74,7 @@ def test_context_builder_dedupes_fragments_by_url_and_prioritizes_attachments():
             relevant_fragments=[
                 ContextFragment(type="source", text="来源 A", metadata={"url": "https://example.com/a"}, create_time="1"),
                 ContextFragment(type="source", text="来源 A duplicate", metadata={"url": "https://example.com/a"}, create_time="2"),
-            ],
-            attachment_summaries=[
-                ContextFragment(type="attachment_summary", text="附件 A", metadata={"url": "https://example.com/file.md"}, create_time="3"),
-            ],
+            ]
         ),
     )
     model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
@@ -65,7 +84,48 @@ def test_context_builder_dedupes_fragments_by_url_and_prioritizes_attachments():
 
     assert "来源 A" in context_message["content"]
     assert "来源 A duplicate" not in context_message["content"]
-    assert context_message["content"].find("[attachment_summary]") < context_message["content"].find("[source]")
+
+
+def test_context_builder_reranks_source_when_user_mentions_sources():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="用刚才联网搜索的来源继续总结",
+        context_source=ContextSource(
+            relevant_fragments=[
+                ContextFragment(type="tool_result", text="天气工具结果", metadata={"score": 0.2}, create_time="1"),
+                ContextFragment(type="source", text="联网搜索来源：JeecgBoot 官网", metadata={"url": "https://jeecg.com", "score": 0.2}, create_time="2"),
+            ]
+        ),
+    )
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    messages = build_messages(request, model)
+    context_message = next(message for message in messages if "可用上下文片段" in message["content"])
+
+    assert context_message["content"].find("[source]") < context_message["content"].find("[tool_result]")
+
+
+def test_context_builder_includes_relevant_messages_before_recent_messages():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="继续之前那个部署问题",
+        context_source=ContextSource(
+            relevant_messages=[
+                ContextMessage(id="message-1", role="user", content="之前讨论过部署新系统需要先配置 nginx"),
+            ],
+            recent_messages=[
+                ContextMessage(id="message-2", role="assistant", content="最近回复"),
+            ],
+        ),
+    )
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    messages = build_messages(request, model)
+    contents = [message["content"] for message in messages]
+
+    assert "之前讨论过部署新系统需要先配置 nginx" in contents
+    assert "最近回复" in contents
+    assert contents.index("之前讨论过部署新系统需要先配置 nginx") < contents.index("最近回复")
 
 
 def test_context_builder_excludes_attachment_summaries_when_user_does_not_reference_files():
@@ -75,6 +135,9 @@ def test_context_builder_excludes_attachment_summaries_when_user_does_not_refere
         context_source=ContextSource(
             attachment_summaries=[
                 ContextFragment(type="attachment_summary", text="用户上传文件：test.txt", metadata={"url": "https://example.com/test.txt"}, create_time="3"),
+            ],
+            attachment_candidates=[
+                ContextFragment(type="attachment_summary", text="用户上传文件：test.txt", metadata={"url": "https://example.com/test.txt", "name": "test.txt"}, create_time="3"),
             ],
         ),
     )
@@ -95,6 +158,9 @@ def test_context_builder_includes_attachment_summaries_when_user_references_prev
             attachment_summaries=[
                 ContextFragment(type="attachment_summary", text="用户上传文件：test.txt", metadata={"url": "https://example.com/test.txt"}, create_time="3"),
             ],
+            attachment_candidates=[
+                ContextFragment(type="attachment_summary", text="用户上传文件：test.txt", metadata={"url": "https://example.com/test.txt", "name": "test.txt"}, create_time="3"),
+            ],
         ),
     )
     model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
@@ -104,6 +170,28 @@ def test_context_builder_includes_attachment_summaries_when_user_references_prev
 
     assert "test.txt" in joined
     assert "attachment_summary" in joined
+
+
+def test_context_builder_includes_high_similarity_attachment_match():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="这个部署流程怎么继续",
+        context_source=ContextSource(
+            attachment_candidates=[
+                ContextFragment(type="attachment_summary", text="用户上传文件：deploy.md", metadata={"name": "deploy.md"}, create_time="3"),
+            ],
+            attachment_matches=[
+                ContextFragment(type="attachment_summary", text="用户上传文件：deploy.md\n附件摘要：部署新系统流程", metadata={"name": "deploy.md", "score": 0.9}, create_time="3"),
+            ],
+        ),
+    )
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    messages = build_messages(request, model)
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "deploy.md" in joined
+    assert "部署新系统流程" in joined
 
 
 def test_context_builder_truncates_long_fragments_before_old_messages():

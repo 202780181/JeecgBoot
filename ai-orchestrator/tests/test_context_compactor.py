@@ -112,4 +112,9 @@ def test_context_compactor_builds_response_from_real_model_call(monkeypatch):
 
     assert response.summary_message_id == "message-1"
     assert '"objective": "上下文管理"' in response.summary_text
+    assert '"snapshotType": "active_context_snapshot"' in response.active_context_snapshot
+    assert response.active_context_token_count > 0
+    assert response.token_ledger["summaryMessageId"] == "message-1"
+    assert response.token_ledger["compactedMessageCount"] == 1
     assert response.metadata["messageCount"] == 1
+    assert response.metadata["activeContextSnapshotVersion"] == 1
