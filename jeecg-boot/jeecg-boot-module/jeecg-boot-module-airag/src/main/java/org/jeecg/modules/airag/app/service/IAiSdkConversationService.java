@@ -29,7 +29,23 @@ public interface IAiSdkConversationService extends IService<AiSdkConversation> {
 
     List<Map<String, Object>> findLatestAttachments(String conversationId, HttpServletRequest httpRequest);
 
-    Map<String, Object> buildContextSource(String conversationId, String currentMessageId, HttpServletRequest httpRequest);
+    Map<String, Object> buildContextSource(String conversationId, String currentMessageId, String queryText, HttpServletRequest httpRequest);
+
+    void embedPendingContextFragments(String conversationId, HttpServletRequest httpRequest);
+
+    void embedPendingContextFragments(String conversationId);
+
+    boolean shouldCompactContext(String conversationId, String currentMessageId, HttpServletRequest httpRequest);
+
+    boolean shouldCompactContext(String conversationId, String currentMessageId);
+
+    Map<String, Object> buildCompactionSource(String conversationId, String currentMessageId, HttpServletRequest httpRequest);
+
+    Map<String, Object> buildCompactionSource(String conversationId, String currentMessageId);
+
+    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata, HttpServletRequest httpRequest);
+
+    void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata);
 
     AiSdkConversationVo createConversation(AiSdkConversationCreateParams params, HttpServletRequest httpRequest);
 

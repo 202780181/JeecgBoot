@@ -13,6 +13,7 @@ import org.jeecg.common.util.AssertUtils;
 import org.jeecg.common.util.TokenUtils;
 import org.jeecg.common.util.UUIDGenerator;
 import org.jeecg.common.util.oConvertUtils;
+import org.jeecg.modules.airag.app.config.AiOrchestratorProperties;
 import org.jeecg.modules.airag.app.entity.AiSdkConversation;
 import org.jeecg.modules.airag.app.entity.AiSdkContextFragment;
 import org.jeecg.modules.airag.app.entity.AiSdkMessage;
@@ -26,14 +27,20 @@ import org.jeecg.modules.airag.app.vo.AiSdkConversationRenameParams;
 import org.jeecg.modules.airag.app.vo.AiSdkConversationVo;
 import org.jeecg.modules.airag.app.vo.AiSdkMessageVo;
 import org.jeecg.modules.airag.app.vo.AppDebugParams;
+import org.jeecg.modules.airag.llm.consts.LLMConsts;
+import org.jeecg.modules.airag.llm.entity.AiragModel;
+import org.jeecg.modules.airag.llm.handler.EmbeddingHandler;
+import org.jeecg.modules.airag.llm.mapper.AiragModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Date;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * AI SDK 会话服务实现
@@ -43,12 +50,25 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
 
     private static final String DEFAULT_SESSION_TYPE = "ai-sdk-chat";
     private static final String MESSAGE_STATUS_COMPLETED = "completed";
+    private static final int COMPACTION_MIN_MESSAGE_COUNT = 24;
+    private static final int COMPACTION_MIN_TOKEN_COUNT = 24000;
+    private static final int RECENT_RAW_MESSAGE_COUNT = 12;
+    private static final int COMPACTION_MAX_MESSAGE_COUNT = 80;
 
     @Autowired
     private AiSdkMessageMapper aiSdkMessageMapper;
 
     @Autowired
     private AiSdkContextFragmentMapper aiSdkContextFragmentMapper;
+
+    @Autowired
+    private EmbeddingHandler embeddingHandler;
+
+    @Autowired
+    private AiOrchestratorProperties orchestratorProperties;
+
+    @Autowired
+    private AiragModelMapper airagModelMapper;
 
     @Override
     public AiSdkConversation ensureConversation(AiragApp app, AppDebugParams request, HttpServletRequest httpRequest) {
@@ -133,14 +153,163 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
     }
 
     @Override
-    public Map<String, Object> buildContextSource(String conversationId, String currentMessageId, HttpServletRequest httpRequest) {
+    public Map<String, Object> buildContextSource(String conversationId, String currentMessageId, String queryText, HttpServletRequest httpRequest) {
         AiSdkConversation conversation = assertConversationOwner(conversationId, httpRequest);
         Map<String, Object> contextSource = new HashMap<>();
         contextSource.put("summary", buildSummaryContext(conversation));
         contextSource.put("recent_messages", buildRecentMessageContext(conversationId, currentMessageId));
-        contextSource.put("relevant_fragments", buildRecentFragmentContext(conversationId, currentMessageId, null));
-        contextSource.put("attachment_summaries", buildRecentFragmentContext(conversationId, currentMessageId, "attachment_summary"));
+        contextSource.put("relevant_fragments", buildRelevantFragmentContext(conversationId, currentMessageId, queryText));
+        contextSource.put(
+                "attachment_summaries",
+                shouldIncludeAttachmentSummaries(queryText) ? buildRecentFragmentContext(conversationId, currentMessageId, "attachment_summary") : new ArrayList<>()
+        );
         return contextSource;
+    }
+
+    @Override
+    public void embedPendingContextFragments(String conversationId, HttpServletRequest httpRequest) {
+        assertConversationOwner(conversationId, httpRequest);
+        embedPendingContextFragments(conversationId);
+    }
+
+    @Override
+    public void embedPendingContextFragments(String conversationId) {
+        if (!orchestratorProperties.isContextEmbeddingEnabled()) {
+            return;
+        }
+        AiSdkConversation conversation = getById(conversationId);
+        if (conversation == null) {
+            throw new JeecgBootException("会话不存在或无权访问");
+        }
+        List<AiSdkContextFragment> fragments = findPendingFragmentEntities(conversationId, orchestratorProperties.getContextEmbeddingBatchSize());
+        if (fragments.isEmpty()) {
+            return;
+        }
+        List<Map<String, Object>> fragmentContexts = new ArrayList<>();
+        for (AiSdkContextFragment fragment : fragments) {
+            fragmentContexts.add(toFragmentContext(fragment));
+        }
+        try {
+            String embedModelId = resolveContextEmbedModelId();
+            embeddingHandler.addAiSdkContextFragments(
+                    embedModelId,
+                    fragmentContexts,
+                    buildAiSdkContextBaseMetadata(conversation)
+            );
+            for (AiSdkContextFragment fragment : fragments) {
+                fragment
+                        .setEmbeddingModelId(oConvertUtils.getString(embedModelId))
+                        .setEmbeddingStatus("completed")
+                        .setEmbeddingError(null)
+                        .setEmbeddingTime(new Date());
+                aiSdkContextFragmentMapper.updateById(fragment);
+            }
+        } catch (Exception e) {
+            for (AiSdkContextFragment fragment : fragments) {
+                fragment
+                        .setEmbeddingStatus("failed")
+                        .setEmbeddingError(trimText(e.getMessage(), 1000))
+                        .setEmbeddingTime(new Date());
+                aiSdkContextFragmentMapper.updateById(fragment);
+            }
+        }
+    }
+
+    private List<AiSdkContextFragment> findPendingFragmentEntities(String conversationId, Integer limit) {
+        LambdaQueryWrapper<AiSdkContextFragment> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkContextFragment::getConversationId, conversationId);
+        query.in(AiSdkContextFragment::getEmbeddingStatus, "pending", "failed");
+        query.isNotNull(AiSdkContextFragment::getText);
+        query.orderByAsc(AiSdkContextFragment::getCreateTime);
+        query.last("LIMIT " + Math.max(1, Math.min(limit == null ? 20 : limit, 50)));
+        return aiSdkContextFragmentMapper.selectList(query);
+    }
+
+    @Override
+    public boolean shouldCompactContext(String conversationId, String currentMessageId, HttpServletRequest httpRequest) {
+        assertConversationOwner(conversationId, httpRequest);
+        return shouldCompactContext(conversationId, currentMessageId);
+    }
+
+    @Override
+    public boolean shouldCompactContext(String conversationId, String currentMessageId) {
+        AiSdkConversation conversation = getById(conversationId);
+        if (conversation == null) {
+            throw new JeecgBootException("会话不存在或无权访问");
+        }
+        LambdaQueryWrapper<AiSdkMessage> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkMessage::getConversationId, conversationId);
+        if (oConvertUtils.isNotEmpty(conversation.getSummaryMessageId())) {
+            Date summaryTime = findMessageCreateTime(conversation.getSummaryMessageId());
+            if (summaryTime != null) {
+                query.gt(AiSdkMessage::getCreateTime, summaryTime);
+            }
+        }
+        if (oConvertUtils.isNotEmpty(currentMessageId)) {
+            query.ne(AiSdkMessage::getId, currentMessageId);
+        }
+        query.in(AiSdkMessage::getRole, "user", "assistant");
+        List<AiSdkMessage> messages = aiSdkMessageMapper.selectList(query);
+        if (messages.size() >= COMPACTION_MIN_MESSAGE_COUNT) {
+            return true;
+        }
+        int tokenCount = 0;
+        for (AiSdkMessage message : messages) {
+            tokenCount += estimateTokenCount(message.getContent());
+        }
+        return tokenCount >= COMPACTION_MIN_TOKEN_COUNT;
+    }
+
+    @Override
+    public Map<String, Object> buildCompactionSource(String conversationId, String currentMessageId, HttpServletRequest httpRequest) {
+        assertConversationOwner(conversationId, httpRequest);
+        return buildCompactionSource(conversationId, currentMessageId);
+    }
+
+    @Override
+    public Map<String, Object> buildCompactionSource(String conversationId, String currentMessageId) {
+        AiSdkConversation conversation = getById(conversationId);
+        if (conversation == null) {
+            throw new JeecgBootException("会话不存在或无权访问");
+        }
+        List<Map<String, Object>> messages = buildCompactionMessageContext(conversation, currentMessageId);
+        List<String> messageIds = new ArrayList<>();
+        for (Map<String, Object> message : messages) {
+            Object id = message.get("id");
+            if (id != null) {
+                messageIds.add(String.valueOf(id));
+            }
+        }
+        Map<String, Object> source = new HashMap<>();
+        source.put("previous_summary", buildSummaryContext(conversation));
+        source.put("messages", messages);
+        source.put("fragments", buildCompactionFragmentContext(conversationId, messageIds));
+        return source;
+    }
+
+    @Override
+    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata, HttpServletRequest httpRequest) {
+        assertConversationOwner(conversationId, httpRequest);
+        updateConversationSummary(conversationId, summary, summaryMessageId, summaryTokenCount, metadata);
+    }
+
+    @Override
+    public void updateConversationSummary(String conversationId, String summary, String summaryMessageId, Integer summaryTokenCount, Map<String, Object> metadata) {
+        AiSdkConversation conversation = getById(conversationId);
+        if (conversation == null) {
+            throw new JeecgBootException("会话不存在或无权访问");
+        }
+        JSONObject conversationMetadata = parseMetadataObject(conversation.getMetadataJson());
+        if (metadata != null) {
+            conversationMetadata.put("contextSummary", metadata);
+        }
+        conversation
+                .setSummary(summary)
+                .setSummaryMessageId(summaryMessageId)
+                .setSummaryTokenCount(summaryTokenCount == null ? estimateTokenCount(summary) : summaryTokenCount)
+                .setMetadataJson(conversationMetadata.toJSONString())
+                .setUpdateTime(new Date());
+        updateById(conversation);
     }
 
     @Override
@@ -205,6 +374,10 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
     @Override
     public void deleteConversation(String conversationId, HttpServletRequest httpRequest) {
         assertConversationOwner(conversationId, httpRequest);
+        try {
+            embeddingHandler.deleteAiSdkContextFragmentsByConversation(resolveContextEmbedModelId(), conversationId);
+        } catch (Exception ignored) {
+        }
         LambdaQueryWrapper<AiSdkContextFragment> fragmentQuery = new LambdaQueryWrapper<>();
         fragmentQuery.eq(AiSdkContextFragment::getConversationId, conversationId);
         aiSdkContextFragmentMapper.delete(fragmentQuery);
@@ -260,6 +433,30 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         return metadata;
     }
 
+    private Map<String, String> buildAiSdkContextBaseMetadata(String conversationId, HttpServletRequest httpRequest) {
+        Map<String, String> metadata = new HashMap<>();
+        AiSdkConversation conversation = getById(conversationId);
+        if (conversation != null) {
+            metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_SESSION_TYPE, oConvertUtils.getString(conversation.getSessionType()));
+            metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_USER_ID, oConvertUtils.getString(conversation.getUserId()));
+        }
+        metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_TENANT_ID, oConvertUtils.getString(TokenUtils.getTenantIdByRequest(httpRequest)));
+        LoginUser loginUser = getLoginUser();
+        if (loginUser != null) {
+            metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_USER_NAME, oConvertUtils.getString(loginUser.getUsername()));
+        }
+        return metadata;
+    }
+
+    private Map<String, String> buildAiSdkContextBaseMetadata(AiSdkConversation conversation) {
+        Map<String, String> metadata = new HashMap<>();
+        metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_SESSION_TYPE, oConvertUtils.getString(conversation.getSessionType()));
+        metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_USER_ID, oConvertUtils.getString(conversation.getUserId()));
+        metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_TENANT_ID, oConvertUtils.getString(conversation.getTenantId()));
+        metadata.put(EmbeddingHandler.EMBED_STORE_METADATA_USER_NAME, oConvertUtils.getString(conversation.getUsername()));
+        return metadata;
+    }
+
     private Map<String, Object> buildSummaryContext(AiSdkConversation conversation) {
         Map<String, Object> summary = new HashMap<>();
         summary.put("text", oConvertUtils.getString(conversation.getSummary()));
@@ -277,7 +474,7 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         }
         query.in(AiSdkMessage::getRole, "user", "assistant");
         query.orderByDesc(AiSdkMessage::getCreateTime);
-        query.last("LIMIT 12");
+        query.last("LIMIT " + RECENT_RAW_MESSAGE_COUNT);
         List<AiSdkMessage> messages = aiSdkMessageMapper.selectList(query);
         List<Map<String, Object>> result = new ArrayList<>();
         for (int i = messages.size() - 1; i >= 0; i--) {
@@ -321,6 +518,241 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
             result.add(item);
         }
         return result;
+    }
+
+    private List<Map<String, Object>> buildRelevantFragmentContext(String conversationId, String currentMessageId, String queryText) {
+        List<Map<String, Object>> embeddingResult = buildEmbeddingFragmentContext(conversationId, currentMessageId, queryText);
+        if (!embeddingResult.isEmpty()) {
+            return embeddingResult;
+        }
+        List<String> keywords = extractKeywords(queryText);
+        if (keywords.isEmpty()) {
+            return buildRecentFragmentContext(conversationId, currentMessageId, null);
+        }
+        LambdaQueryWrapper<AiSdkContextFragment> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkContextFragment::getConversationId, conversationId);
+        if (oConvertUtils.isNotEmpty(currentMessageId)) {
+            query.ne(AiSdkContextFragment::getMessageId, currentMessageId);
+        }
+        query.ne(AiSdkContextFragment::getType, "attachment_summary");
+        query.orderByDesc(AiSdkContextFragment::getCreateTime);
+        query.last("LIMIT 200");
+        List<ScoredFragment> scored = new ArrayList<>();
+        for (AiSdkContextFragment fragment : aiSdkContextFragmentMapper.selectList(query)) {
+            int score = scoreFragment(fragment, keywords);
+            if (score > 0) {
+                scored.add(new ScoredFragment(fragment, score));
+            }
+        }
+        scored.sort((a, b) -> {
+            int scoreCompare = Integer.compare(b.score, a.score);
+            if (scoreCompare != 0) {
+                return scoreCompare;
+            }
+            Date aTime = a.fragment.getCreateTime();
+            Date bTime = b.fragment.getCreateTime();
+            if (aTime == null && bTime == null) return 0;
+            if (aTime == null) return 1;
+            if (bTime == null) return -1;
+            return bTime.compareTo(aTime);
+        });
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ScoredFragment item : scored.subList(0, Math.min(scored.size(), 20))) {
+            Map<String, Object> row = toFragmentContext(item.fragment);
+            row.put("score", item.score);
+            result.add(row);
+        }
+        if (result.isEmpty()) {
+            return buildRecentFragmentContext(conversationId, currentMessageId, null);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> buildEmbeddingFragmentContext(String conversationId, String currentMessageId, String queryText) {
+        if (!orchestratorProperties.isContextEmbeddingEnabled() || oConvertUtils.isEmpty(queryText)) {
+            return new ArrayList<>();
+        }
+        try {
+            List<Map<String, Object>> matches = embeddingHandler.searchAiSdkContextFragments(
+                    resolveContextEmbedModelId(),
+                    conversationId,
+                    queryText,
+                    orchestratorProperties.getContextEmbeddingTopNumber(),
+                    orchestratorProperties.getContextEmbeddingSimilarity()
+            );
+            List<Map<String, Object>> result = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (Map<String, Object> match : matches) {
+                String fragmentId = oConvertUtils.getString(match.get(EmbeddingHandler.EMBED_STORE_METADATA_FRAGMENT_ID));
+                if (oConvertUtils.isEmpty(fragmentId) || !seen.add(fragmentId)) {
+                    continue;
+                }
+                AiSdkContextFragment fragment = aiSdkContextFragmentMapper.selectById(fragmentId);
+                if (fragment == null || !conversationId.equals(fragment.getConversationId())) {
+                    continue;
+                }
+                if (oConvertUtils.isNotEmpty(currentMessageId) && currentMessageId.equals(fragment.getMessageId())) {
+                    continue;
+                }
+                if ("attachment_summary".equals(fragment.getType())) {
+                    continue;
+                }
+                Map<String, Object> row = toFragmentContext(fragment);
+                row.put("score", match.get("score"));
+                row.put("retrieval", "pgvector");
+                result.add(row);
+            }
+            return result;
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
+    }
+
+    private boolean shouldIncludeAttachmentSummaries(String queryText) {
+        String text = oConvertUtils.getString(queryText).toLowerCase();
+        if (text.isEmpty()) {
+            return false;
+        }
+        String[] keywords = new String[] {
+                "附件", "文件", "上传", "刚才", "之前", "上次", "历史", "文档",
+                ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv",
+                "attachment", "file", "document", "uploaded", "previous"
+        };
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String resolveContextEmbedModelId() {
+        if (oConvertUtils.isNotEmpty(orchestratorProperties.getContextEmbedModelId())) {
+            return orchestratorProperties.getContextEmbedModelId();
+        }
+        LambdaQueryWrapper<AiragModel> query = new LambdaQueryWrapper<>();
+        query.eq(AiragModel::getModelType, LLMConsts.MODEL_TYPE_EMBED);
+        query.eq(AiragModel::getActivateFlag, 1);
+        query.orderByDesc(AiragModel::getUpdateTime);
+        query.orderByDesc(AiragModel::getCreateTime);
+        query.last("LIMIT 1");
+        AiragModel model = airagModelMapper.selectOne(query);
+        return model == null ? null : model.getId();
+    }
+
+    private List<Map<String, Object>> buildCompactionMessageContext(AiSdkConversation conversation, String currentMessageId) {
+        LambdaQueryWrapper<AiSdkMessage> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkMessage::getConversationId, conversation.getId());
+        if (oConvertUtils.isNotEmpty(conversation.getSummaryMessageId())) {
+            Date summaryTime = findMessageCreateTime(conversation.getSummaryMessageId());
+            if (summaryTime != null) {
+                query.gt(AiSdkMessage::getCreateTime, summaryTime);
+            }
+        }
+        if (oConvertUtils.isNotEmpty(currentMessageId)) {
+            query.ne(AiSdkMessage::getId, currentMessageId);
+        }
+        query.in(AiSdkMessage::getRole, "user", "assistant");
+        query.orderByAsc(AiSdkMessage::getCreateTime);
+        query.last("LIMIT 200");
+        List<AiSdkMessage> messages = aiSdkMessageMapper.selectList(query);
+        if (messages.size() <= RECENT_RAW_MESSAGE_COUNT) {
+            return new ArrayList<>();
+        }
+        int compactableEnd = messages.size() - RECENT_RAW_MESSAGE_COUNT;
+        List<AiSdkMessage> compactableMessages = messages.subList(0, compactableEnd);
+        if (compactableMessages.size() > COMPACTION_MAX_MESSAGE_COUNT) {
+            compactableMessages = compactableMessages.subList(0, COMPACTION_MAX_MESSAGE_COUNT);
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AiSdkMessage message : compactableMessages) {
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", message.getId());
+            item.put("role", message.getRole());
+            item.put("content", trimText(message.getContent(), 6000));
+            item.put("tokenCount", message.getTokenCount());
+            item.put("metadata", parseMetadata(message.getMetadataJson()));
+            item.put("createTime", message.getCreateTime());
+            result.add(item);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> buildCompactionFragmentContext(String conversationId, List<String> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+        LambdaQueryWrapper<AiSdkContextFragment> query = new LambdaQueryWrapper<>();
+        query.eq(AiSdkContextFragment::getConversationId, conversationId);
+        query.in(AiSdkContextFragment::getMessageId, messageIds);
+        query.orderByDesc(AiSdkContextFragment::getCreateTime);
+        query.last("LIMIT 80");
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AiSdkContextFragment fragment : aiSdkContextFragmentMapper.selectList(query)) {
+            result.add(toFragmentContext(fragment));
+        }
+        return result;
+    }
+
+    private Map<String, Object> toFragmentContext(AiSdkContextFragment fragment) {
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", fragment.getId());
+        item.put("conversationId", fragment.getConversationId());
+        item.put("messageId", fragment.getMessageId());
+        item.put("type", fragment.getType());
+        item.put("text", fragment.getText());
+        item.put("tokenCount", fragment.getTokenCount());
+        item.put("metadata", parseMetadata(fragment.getMetadataJson()));
+        item.put("createTime", fragment.getCreateTime());
+        item.put("embeddingStatus", fragment.getEmbeddingStatus());
+        item.put("embeddingModelId", fragment.getEmbeddingModelId());
+        return item;
+    }
+
+    private Date findMessageCreateTime(String messageId) {
+        if (oConvertUtils.isEmpty(messageId)) {
+            return null;
+        }
+        AiSdkMessage message = aiSdkMessageMapper.selectById(messageId);
+        return message == null ? null : message.getCreateTime();
+    }
+
+    private List<String> extractKeywords(String text) {
+        String normalized = oConvertUtils.getString(text)
+                .replaceAll("[^\\p{IsHan}a-zA-Z0-9_\\-]+", " ")
+                .trim()
+                .toLowerCase();
+        if (normalized.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Set<String> keywords = new LinkedHashSet<>();
+        for (String token : normalized.split("\\s+")) {
+            if (token.length() >= 2) {
+                keywords.add(token);
+            }
+        }
+        if (keywords.isEmpty() && normalized.length() >= 2) {
+            keywords.add(normalized);
+        }
+        return new ArrayList<>(keywords);
+    }
+
+    private int scoreFragment(AiSdkContextFragment fragment, List<String> keywords) {
+        String haystack = (oConvertUtils.getString(fragment.getText()) + " " + oConvertUtils.getString(fragment.getMetadataJson())).toLowerCase();
+        int score = 0;
+        for (String keyword : keywords) {
+            if (haystack.contains(keyword)) {
+                score += keyword.length();
+            }
+        }
+        if ("attachment_summary".equals(fragment.getType())) {
+            score += 4;
+        } else if ("skill_result".equals(fragment.getType())) {
+            score += 3;
+        } else if ("tool_result".equals(fragment.getType())) {
+            score += 2;
+        }
+        return score;
     }
 
     private void rebuildContextFragments(AiSdkMessage message) {
@@ -465,6 +897,7 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
                 .setType(type)
                 .setText(content)
                 .setTokenCount(estimateTokenCount(content))
+                .setEmbeddingStatus("pending")
                 .setMetadataJson(metadata == null ? null : metadata.toJSONString())
                 .setCreateTime(new Date());
     }
@@ -661,6 +1094,16 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
             return principal instanceof LoginUser ? (LoginUser) principal : null;
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    private static class ScoredFragment {
+        private final AiSdkContextFragment fragment;
+        private final int score;
+
+        private ScoredFragment(AiSdkContextFragment fragment, int score) {
+            this.fragment = fragment;
+            this.score = score;
         }
     }
 }

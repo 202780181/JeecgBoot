@@ -88,8 +88,15 @@
             @select="actions.selectModel"
             @toggle-menu="actions.toggleModelMenu"
           />
-          <button class="send-btn" type="button" :disabled="state.loading || !state.input.trim()" :aria-label="state.loading ? '发送中' : '发送'" @click="actions.send">
-            <Icon :icon="state.loading ? 'ant-design:loading-3-quarters-outlined' : 'material-symbols:arrow-upward-rounded'" />
+          <button
+            class="send-btn"
+            type="button"
+            :class="{ stopping: state.loading }"
+            :disabled="!state.loading && !state.input.trim()"
+            :aria-label="state.loading ? '停止响应' : '发送'"
+            @click="state.loading ? actions.stopResponse() : actions.send()"
+          >
+            <Icon :icon="state.loading ? 'material-symbols:stop-rounded' : 'material-symbols:arrow-upward-rounded'" />
           </button>
         </div>
       </div>
@@ -378,6 +385,14 @@ onMounted(() => {
   &:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+  }
+
+  &.stopping {
+    background: #111827;
+
+    &:hover {
+      background: #374151;
+    }
   }
 }
 

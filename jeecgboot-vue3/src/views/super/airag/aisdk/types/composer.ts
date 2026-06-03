@@ -41,6 +41,7 @@ export interface AiSdkComposerActions {
   removeSkill: (id: string) => void;
   selectModel: (id: string) => void;
   send: () => void;
+  stopResponse: () => void;
   setComposerRef: (value: HTMLElement | undefined) => void;
   setFileInputRef: (value: HTMLInputElement | undefined) => void;
   setMenuRef: (key: 'add' | 'skills' | 'model', value: HTMLElement | undefined) => void;

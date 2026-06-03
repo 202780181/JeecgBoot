@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExecutorName(str, Enum):
@@ -89,30 +89,36 @@ class ChatAttachment(BaseModel):
 
 
 class ContextSummary(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     text: str | None = None
-    message_id: str | None = None
-    token_count: int | None = None
+    message_id: str | None = Field(default=None, alias="messageId")
+    token_count: int | None = Field(default=None, alias="tokenCount")
     metadata: dict = Field(default_factory=dict)
 
 
 class ContextMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str | None = None
     role: str
     content: str = ""
-    token_count: int | None = None
+    token_count: int | None = Field(default=None, alias="tokenCount")
     metadata: dict = Field(default_factory=dict)
-    create_time: str | None = None
+    create_time: str | None = Field(default=None, alias="createTime")
 
 
 class ContextFragment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str | None = None
-    conversation_id: str | None = None
-    message_id: str | None = None
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    message_id: str | None = Field(default=None, alias="messageId")
     type: str
     text: str = ""
-    token_count: int | None = None
+    token_count: int | None = Field(default=None, alias="tokenCount")
     metadata: dict = Field(default_factory=dict)
-    create_time: str | None = None
+    create_time: str | None = Field(default=None, alias="createTime")
 
 
 class ContextSource(BaseModel):
@@ -149,6 +155,28 @@ class AppChatStreamRequest(BaseModel):
     messages: list[ChatContextMessage] = Field(default_factory=list)
     context_source: ContextSource = Field(default_factory=ContextSource)
     user_context: UserContext = Field(default_factory=UserContext)
+
+
+class ContextCompactionSource(BaseModel):
+    previous_summary: ContextSummary = Field(default_factory=ContextSummary)
+    messages: list[ContextMessage] = Field(default_factory=list)
+    fragments: list[ContextFragment] = Field(default_factory=list)
+
+
+class ContextCompactionRequest(BaseModel):
+    app: AiAppConfig
+    conversation_id: str
+    context_source: ContextCompactionSource
+    user_context: UserContext = Field(default_factory=UserContext)
+
+
+class ContextCompactionResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    summary_text: str = Field(alias="summaryText")
+    summary_message_id: str | None = Field(default=None, alias="summaryMessageId")
+    token_count: int = Field(alias="tokenCount")
+    metadata: dict = Field(default_factory=dict)
 
 
 class ModelCredential(BaseModel):

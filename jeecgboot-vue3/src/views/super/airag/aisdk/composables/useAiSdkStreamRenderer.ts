@@ -13,7 +13,7 @@ export function useAiSdkStreamRenderer(options: UseAiSdkStreamRendererOptions) {
   async function renderAssistantStream(readableStream: ReadableStream<Uint8Array>, assistantId: string) {
     if (!readableStream?.getReader) {
       options.updateMessage(assistantId, 'AI Orchestrator 没有返回有效的流式响应。');
-      return;
+      return { hasText: false };
     }
     const reader = readableStream.getReader();
     const decoder = new TextDecoder('UTF-8');
@@ -207,6 +207,7 @@ export function useAiSdkStreamRenderer(options: UseAiSdkStreamRendererOptions) {
       options.finishMessage(assistantId);
       flushPendingSources();
     }
+    return { hasText: !!text };
   }
 
   return {

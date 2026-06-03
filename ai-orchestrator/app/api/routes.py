@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.executors.dry_run import DryRunExecutor
@@ -6,6 +6,8 @@ from app.models.schemas import (
     AppChatStreamRequest,
     AppDebugRequest,
     AppDebugResponse,
+    ContextCompactionRequest,
+    ContextCompactionResponse,
     RequirementAnalysis,
     RequirementRequest,
     SpecGenerateRequest,
@@ -15,6 +17,7 @@ from app.models.schemas import (
 )
 from app.services.capability_router import KEYWORDS, analyze_requirement, select_executor
 from app.services.chat_service import ChatService
+from app.services.context_compactor import ContextCompactor
 from app.services.spec_service import generate_spec_with_speckit
 from app.skills import SkillRegistry
 
@@ -101,6 +104,14 @@ async def chat_stream(request: AppChatStreamRequest) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@router.post("/api/context/compact", response_model=ContextCompactionResponse)
+async def compact_context(request: ContextCompactionRequest) -> ContextCompactionResponse:
+    try:
+        return await ContextCompactor().compact(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/api/tasks/execute", response_model=TaskExecuteResponse)

@@ -23,6 +23,10 @@ export function useAiSdkChatMessages() {
     return message.parts;
   }
 
+  function findMessageById(id: string) {
+    return chat.messages.find((message) => message.id === id);
+  }
+
   function addMessage(role: 'user' | 'assistant', text: string, metadata?: AiSdkMessageMetadata) {
     const id = `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const message: AiSdkUIMessage = {
@@ -160,6 +164,7 @@ export function useAiSdkChatMessages() {
     appendWeatherPart,
     chat,
     clearMessages,
+    findMessageById,
     finishMessage,
     getMessageParts,
     getMessageText,

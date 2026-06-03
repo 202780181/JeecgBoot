@@ -36,10 +36,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Slf4j
 @Service
 public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
+    private static final ExecutorService CONTEXT_POST_PROCESSOR = Executors.newFixedThreadPool(2);
+
     @Autowired
     private IAiragAppService airagAppService;
 
@@ -113,10 +117,9 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
     private void proxyChatStream(AiragApp app, AppDebugParams request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
         String requestId = UUID.randomUUID().toString();
         AiSdkConversation conversation = aiSdkConversationService.ensureConversation(app, request, httpRequest);
-        hydrateConversationAttachments(request, conversation.getId(), httpRequest);
         AiSdkMessage userMessage = aiSdkConversationService.saveUserMessage(conversation, app, request);
         String conversationId = conversation.getId();
-        Map<String, Object> contextSource = aiSdkConversationService.buildContextSource(conversationId, userMessage.getId(), httpRequest);
+        Map<String, Object> contextSource = aiSdkConversationService.buildContextSource(conversationId, userMessage.getId(), request.getContent(), httpRequest);
         String topicId = request.getTopicId() == null ? "" : request.getTopicId();
         HttpURLConnection connection = null;
         boolean forwarded = false;
@@ -164,7 +167,16 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
             if (!assistantSaved && assistantContent.length() > 0) {
                 aiSdkConversationService.saveAssistantMessage(conversationId, assistantContent.toString(), "completed", app, request, metadataCollector.toMetadata());
             }
+            runContextPostProcessing(app, request, conversationId, userMessage.getId(), httpRequest);
         } catch (Exception e) {
+            if (isClientAbortException(e)) {
+                log.info("AI SDK SSE 客户端已停止响应，conversationId={}", conversationId);
+                if (assistantContent.length() > 0) {
+                    aiSdkConversationService.saveAssistantMessage(conversationId, assistantContent.toString(), "completed", app, request, metadataCollector.toMetadata());
+                    runContextPostProcessing(app, request, conversationId, userMessage.getId(), httpRequest);
+                }
+                return;
+            }
             log.error("ai-orchestrator SSE 代理失败", e);
             try {
                 JSONObject message = new JSONObject();
@@ -182,14 +194,72 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         }
     }
 
-    private void hydrateConversationAttachments(AppDebugParams request, String conversationId, HttpServletRequest httpRequest) {
-        if (request.getAttachments() != null && !request.getAttachments().isEmpty()) {
-            return;
+    private void triggerContextCompactionIfNeeded(AiragApp app, AppDebugParams request, String conversationId, String currentMessageId, Map<String, Object> userContext) {
+        try {
+            if (!aiSdkConversationService.shouldCompactContext(conversationId, currentMessageId)) {
+                return;
+            }
+            Map<String, Object> compactionSource = aiSdkConversationService.buildCompactionSource(conversationId, currentMessageId);
+            List<?> messages = (List<?>) compactionSource.get("messages");
+            if (messages == null || messages.isEmpty()) {
+                return;
+            }
+            JSONObject payload = new JSONObject();
+            payload.put("app", buildAppPayload(app));
+            payload.put("conversation_id", conversationId);
+            payload.put("context_source", compactionSource);
+            payload.put("user_context", userContext == null ? new JSONObject() : userContext);
+
+            HttpURLConnection compactConnection = null;
+            try {
+                compactConnection = openJsonConnection("/api/context/compact");
+                try (OutputStream outputStream = compactConnection.getOutputStream()) {
+                    outputStream.write(payload.toJSONString().getBytes(StandardCharsets.UTF_8));
+                }
+                int status = compactConnection.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    throw new IOException("ai-orchestrator HTTP " + status + readErrorBody(compactConnection));
+                }
+                JSONObject response = JSONObject.parseObject(readBody(compactConnection.getInputStream()));
+                String summaryText = response.getString("summaryText");
+                if (summaryText == null) {
+                    summaryText = response.getString("summary_text");
+                }
+                if (summaryText == null || summaryText.trim().isEmpty()) {
+                    log.warn("上下文压缩未返回摘要内容，conversationId={}", conversationId);
+                    return;
+                }
+                String summaryMessageId = response.getString("summaryMessageId");
+                if (summaryMessageId == null) {
+                    summaryMessageId = response.getString("summary_message_id");
+                }
+                Integer tokenCount = response.getInteger("tokenCount");
+                if (tokenCount == null) {
+                    tokenCount = response.getInteger("token_count");
+                }
+                JSONObject metadata = response.getJSONObject("metadata");
+                aiSdkConversationService.updateConversationSummary(conversationId, summaryText, summaryMessageId, tokenCount, metadata);
+                log.info("上下文压缩完成，conversationId={}, summaryMessageId={}, tokenCount={}", conversationId, summaryMessageId, tokenCount);
+            } finally {
+                if (compactConnection != null) {
+                    compactConnection.disconnect();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("上下文压缩失败，conversationId={}", conversationId, e);
         }
-        List<Map<String, Object>> latestAttachments = aiSdkConversationService.findLatestAttachments(conversationId, httpRequest);
-        if (!latestAttachments.isEmpty()) {
-            request.setAttachments(latestAttachments);
-        }
+    }
+
+    private void runContextPostProcessing(AiragApp app, AppDebugParams request, String conversationId, String currentMessageId, HttpServletRequest httpRequest) {
+        Map<String, Object> userContext = buildUserContext(httpRequest);
+        CONTEXT_POST_PROCESSOR.submit(() -> {
+            try {
+                aiSdkConversationService.embedPendingContextFragments(conversationId);
+            } catch (Exception e) {
+                log.warn("AI SDK 上下文向量化失败，conversationId={}", conversationId, e);
+            }
+            triggerContextCompactionIfNeeded(app, request, conversationId, currentMessageId, userContext);
+        });
     }
 
     private void prepareSseResponse(HttpServletResponse response) {
@@ -210,6 +280,18 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         connection.setReadTimeout(properties.getTimeout());
         connection.setRequestProperty("Content-Type", MediaType.APPLICATION_JSON_VALUE);
         connection.setRequestProperty("Accept", MediaType.TEXT_EVENT_STREAM_VALUE);
+        return connection;
+    }
+
+    private HttpURLConnection openJsonConnection(String path) throws IOException {
+        URL url = new URL(trimRightSlash(properties.getBaseUrl()) + path);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setConnectTimeout(properties.getTimeout());
+        connection.setReadTimeout(properties.getTimeout());
+        connection.setRequestProperty("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+        connection.setRequestProperty("Accept", MediaType.APPLICATION_JSON_VALUE);
         return connection;
     }
 
@@ -410,6 +492,22 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         writer.write(eventData.toJSONString());
         writer.write("\n\n");
         writer.flush();
+    }
+
+    private boolean isClientAbortException(Exception e) {
+        Throwable current = e;
+        while (current != null) {
+            String className = current.getClass().getName();
+            String message = current.getMessage();
+            if (className.contains("ClientAbortException")) {
+                return true;
+            }
+            if (message != null && (message.contains("Broken pipe") || message.contains("Connection reset by peer"))) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String readErrorBody(HttpURLConnection connection) {

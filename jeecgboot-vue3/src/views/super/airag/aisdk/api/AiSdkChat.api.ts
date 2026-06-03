@@ -28,11 +28,12 @@ export interface AiSdkUploadedAttachment {
   url: string;
 }
 
-export async function debugAssistant(params: Recordable) {
+export async function debugAssistant(params: Recordable, options: { signal?: AbortSignal } = {}) {
   const res = await defHttp.post(
     {
       url: '/airag/app/orchestrator/chat/stream',
       params,
+      signal: options.signal,
       adapter: 'fetch',
       responseType: 'stream',
       timeout: 60 * 60 * 1000,

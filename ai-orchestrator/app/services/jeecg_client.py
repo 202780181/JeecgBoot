@@ -13,11 +13,18 @@ class JeecgClient:
     async def get_model_config(self, model_id: str | None, user_context: UserContext) -> ModelConfig:
         if not model_id:
             raise ValueError("请选择 AI 模型")
+        return await self._fetch_model_config({"id": model_id}, user_context)
+
+    async def get_embedding_model_config(self, model_id: str | None, user_context: UserContext) -> ModelConfig:
+        params = {"id": model_id} if model_id else {"modelType": "EMBED"}
+        return await self._fetch_model_config(params, user_context)
+
+    async def _fetch_model_config(self, params: dict, user_context: UserContext) -> ModelConfig:
         headers = self._headers(user_context)
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
                 f"{self.base_url}/airag/airagModel/orchestrator/config",
-                params={"id": model_id},
+                params=params,
                 headers=headers,
             )
             response.raise_for_status()
@@ -35,7 +42,7 @@ class JeecgClient:
 
         api_key = credential.get("apiKey") or credential.get("api_key")
         return ModelConfig(
-            id=result.get("id") or model_id,
+            id=result.get("id") or params.get("id") or "",
             provider=result.get("provider"),
             model_name=result.get("modelName") or result.get("model_name"),
             base_url=result.get("baseUrl") or result.get("base_url"),

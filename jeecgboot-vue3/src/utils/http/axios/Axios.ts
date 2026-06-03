@@ -202,6 +202,9 @@ export class VAxios {
 
   request<T = any>(config: AxiosRequestConfig, options?: RequestOptions): Promise<T> {
     let conf: CreateAxiosOptions = cloneDeep(config);
+    if (config.signal) {
+      conf.signal = config.signal;
+    }
     const transform = this.getTransform();
 
     const { requestOptions } = this.options;

@@ -116,6 +116,7 @@ const webSearchEnabled = ref(false);
 const fileInputAccept = ref('');
 const skillOptions = ref<AiSkillOption[]>([]);
 const selectedSkillIds = ref<string[]>([]);
+const streamAbortController = ref<AbortController | null>(null);
 const composerPopupTransition: $Transition = {
   duration: 0.18,
   ease: [0.22, 1, 0.36, 1],
@@ -156,6 +157,7 @@ const {
   appendWeatherPart, 
   chat, 
   clearMessages: clearChatMessages, 
+  findMessageById,
   finishMessage,
   getMessageParts, 
   getMessageText, 
@@ -461,6 +463,7 @@ const composerActions: AiSdkComposerActions = {
   removeSkill,
   selectModel,
   send: sendRequirement,
+  stopResponse,
   setComposerRef,
   setFileInputRef,
   setMenuRef: setComposerMenuRef,
@@ -564,6 +567,8 @@ async function sendRequirement() {
   });
 
   const assistantId = addThinkingMessage();
+  const abortController = new AbortController();
+  streamAbortController.value = abortController;
   await scrollToBottom();
   try {
     const stream = await debugAssistant({
@@ -574,15 +579,38 @@ async function sendRequirement() {
       enableSearch: webSearchEnabled.value,
       attachments: sentAttachments,
       sessionType: AI_SDK_SESSION_TYPE,
-    });
-    await renderAssistantStream(stream, assistantId);
+    }, { signal: abortController.signal });
+    const result = await renderAssistantStream(stream, assistantId);
+    if (!result.hasText && abortController.signal.aborted) {
+      updateMessage(assistantId, '已停止响应。');
+      finishMessage(assistantId);
+    }
   } catch (error: any) {
+    if (isAbortError(error)) {
+      const assistantMessage = findMessageById(assistantId);
+      if (!assistantMessage || !getMessageText(assistantMessage)) {
+        updateMessage(assistantId, '已停止响应。');
+      }
+      finishMessage(assistantId);
+      return;
+    }
     createMessage.error(error?.message || 'AI Orchestrator 服务调用失败');
     updateMessage(assistantId, '调用 AI Orchestrator 失败，请确认 Python 服务已启动，并检查 JeecgBoot 的 ai-orchestrator 地址配置。');
   } finally {
+    if (streamAbortController.value === abortController) {
+      streamAbortController.value = null;
+    }
     await refreshHistoryItems();
     loading.value = false;
   }
+}
+
+function stopResponse() {
+  streamAbortController.value?.abort();
+}
+
+function isAbortError(error: any) {
+  return error?.name === 'AbortError' || error?.code === 'ERR_CANCELED' || /aborted|canceled|cancelled/i.test(error?.message || '');
 }
 
 function clearMessages() {
@@ -607,6 +635,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleDocumentPointerDown);
+  stopResponse();
   clearCodeBlockCopyTimers();
 });
 </script>

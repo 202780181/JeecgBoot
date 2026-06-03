@@ -137,6 +137,16 @@ public class EmbeddingHandler implements IEmbeddingHandler {
      */
     public static final String EMBED_STORE_CREATE_TIME = "createTime";
 
+    public static final String EMBED_STORE_METADATA_SCOPE = "scope";
+    public static final String EMBED_STORE_SCOPE_AI_SDK_CONTEXT = "ai_sdk_context";
+    public static final String EMBED_STORE_METADATA_CONVERSATION_ID = "conversationId";
+    public static final String EMBED_STORE_METADATA_MESSAGE_ID = "messageId";
+    public static final String EMBED_STORE_METADATA_FRAGMENT_ID = "fragmentId";
+    public static final String EMBED_STORE_METADATA_FRAGMENT_TYPE = "fragmentType";
+    public static final String EMBED_STORE_METADATA_SESSION_TYPE = "sessionType";
+    public static final String EMBED_STORE_METADATA_USER_ID = "userId";
+    public static final String EMBED_STORE_METADATA_TENANT_ID = "tenantId";
+
     /**
      * 向量存储缓存
      */
@@ -521,6 +531,99 @@ public class EmbeddingHandler implements IEmbeddingHandler {
             }).collect(Collectors.toList());
         }
         return result;
+    }
+
+    public void addAiSdkContextFragments(String modelId, List<Map<String, Object>> fragments, Map<String, String> baseMetadata) {
+        if (fragments == null || fragments.isEmpty()) {
+            return;
+        }
+        AiragModel model = getEmbedModelData(modelId);
+        AiModelOptions modelOp = buildModelOptions(model);
+        EmbeddingModel embeddingModel = AiModelFactory.createEmbeddingModel(modelOp);
+        EmbeddingStore<TextSegment> embeddingStore = getEmbedStore(model);
+        List<TextSegment> segments = new ArrayList<>();
+        for (Map<String, Object> fragment : fragments) {
+            String fragmentId = oConvertUtils.getString(fragment.get("id"));
+            String text = oConvertUtils.getString(fragment.get("text"));
+            if (oConvertUtils.isEmpty(fragmentId) || oConvertUtils.isEmpty(text)) {
+                continue;
+            }
+            embeddingStore.removeAll(metadataKey(EMBED_STORE_METADATA_FRAGMENT_ID).isEqualTo(fragmentId));
+            Metadata metadata = Metadata.metadata(EMBED_STORE_METADATA_SCOPE, EMBED_STORE_SCOPE_AI_SDK_CONTEXT)
+                    .put(EMBED_STORE_METADATA_FRAGMENT_ID, fragmentId)
+                    .put(EMBED_STORE_METADATA_CONVERSATION_ID, oConvertUtils.getString(fragment.get("conversationId")))
+                    .put(EMBED_STORE_METADATA_MESSAGE_ID, oConvertUtils.getString(fragment.get("messageId")))
+                    .put(EMBED_STORE_METADATA_FRAGMENT_TYPE, oConvertUtils.getString(fragment.get("type")))
+                    .put(EMBED_STORE_CREATE_TIME, String.valueOf(System.currentTimeMillis()));
+            appendMetadata(metadata, baseMetadata);
+            segments.add(TextSegment.from(text, metadata));
+        }
+        if (segments.isEmpty()) {
+            return;
+        }
+        List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
+        embeddingStore.addAll(embeddings, segments);
+    }
+
+    public List<Map<String, Object>> searchAiSdkContextFragments(String modelId, String conversationId, String queryText, Integer topNumber, Double similarity) {
+        AssertUtils.assertNotEmpty("请选择会话", conversationId);
+        AssertUtils.assertNotEmpty("请填写查询内容", queryText);
+        AiragModel model = getEmbedModelData(modelId);
+        AiModelOptions modelOp = buildModelOptions(model);
+        EmbeddingModel embeddingModel = AiModelFactory.createEmbeddingModel(modelOp);
+        Embedding queryEmbedding = embeddingModel.embed(queryText).content();
+        topNumber = oConvertUtils.getInteger(topNumber, modelOp.getTopNumber());
+        similarity = oConvertUtils.getDou(similarity, modelOp.getSimilarity());
+        Filter filter = new And(
+                metadataKey(EMBED_STORE_METADATA_SCOPE).isEqualTo(EMBED_STORE_SCOPE_AI_SDK_CONTEXT),
+                metadataKey(EMBED_STORE_METADATA_CONVERSATION_ID).isEqualTo(conversationId)
+        );
+        EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
+                .queryEmbedding(queryEmbedding)
+                .maxResults(topNumber)
+                .minScore(similarity)
+                .filter(filter)
+                .build();
+        EmbeddingStore<TextSegment> embeddingStore = getEmbedStore(model);
+        List<EmbeddingMatch<TextSegment>> matches = embeddingStore.search(request).matches();
+        if (oConvertUtils.isObjectEmpty(matches)) {
+            return new ArrayList<>();
+        }
+        return matches.stream().map(match -> {
+            Metadata metadata = match.embedded().metadata();
+            Map<String, Object> data = new HashMap<>();
+            data.put("score", match.score());
+            data.put("content", match.embedded().text());
+            data.put(EMBED_STORE_METADATA_FRAGMENT_ID, metadata.getString(EMBED_STORE_METADATA_FRAGMENT_ID));
+            data.put(EMBED_STORE_METADATA_MESSAGE_ID, metadata.getString(EMBED_STORE_METADATA_MESSAGE_ID));
+            data.put(EMBED_STORE_METADATA_FRAGMENT_TYPE, metadata.getString(EMBED_STORE_METADATA_FRAGMENT_TYPE));
+            data.put(EMBED_STORE_CREATE_TIME, metadata.getString(EMBED_STORE_CREATE_TIME));
+            return data;
+        }).collect(Collectors.toList());
+    }
+
+    public void deleteAiSdkContextFragmentsByConversation(String modelId, String conversationId) {
+        if (oConvertUtils.isEmpty(conversationId)) {
+            return;
+        }
+        AiragModel model = getEmbedModelData(modelId);
+        EmbeddingStore<TextSegment> embeddingStore = getEmbedStore(model);
+        Filter filter = new And(
+                metadataKey(EMBED_STORE_METADATA_SCOPE).isEqualTo(EMBED_STORE_SCOPE_AI_SDK_CONTEXT),
+                metadataKey(EMBED_STORE_METADATA_CONVERSATION_ID).isEqualTo(conversationId)
+        );
+        embeddingStore.removeAll(filter);
+    }
+
+    private void appendMetadata(Metadata metadata, Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            if (oConvertUtils.isNotEmpty(entry.getKey()) && oConvertUtils.isNotEmpty(entry.getValue())) {
+                metadata.put(entry.getKey(), entry.getValue());
+            }
+        }
     }
 
     /**

@@ -43,6 +43,20 @@ public class AiSdkContextFragment implements Serializable {
     @Schema(description = "估算Token数")
     private Integer tokenCount;
 
+    @Schema(description = "向量模型ID")
+    private String embeddingModelId;
+
+    @Schema(description = "向量状态")
+    private String embeddingStatus;
+
+    @Schema(description = "向量错误")
+    private String embeddingError;
+
+    @JsonFormat(timezone = "GMT+8", pattern = "yyyy-MM-dd HH:mm:ss")
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @Schema(description = "向量时间")
+    private Date embeddingTime;
+
     @Schema(description = "元数据JSON")
     private String metadataJson;
 

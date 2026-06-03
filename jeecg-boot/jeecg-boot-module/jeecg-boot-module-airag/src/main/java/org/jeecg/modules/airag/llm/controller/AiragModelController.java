@@ -147,8 +147,19 @@ public class AiragModelController extends JeecgController<AiragModel, IAiragMode
      * ai-orchestrator 读取模型调用配置。
      */
     @GetMapping(value = "/orchestrator/config")
-    public Result<JSONObject> queryOrchestratorConfig(@RequestParam(name = "id", required = true) String id) {
-        AiragModel airagModel = airagModelService.getById(id);
+    public Result<JSONObject> queryOrchestratorConfig(@RequestParam(name = "id", required = false) String id,
+                                                      @RequestParam(name = "modelType", required = false) String modelType) {
+        AiragModel airagModel = null;
+        if (oConvertUtils.isNotEmpty(id)) {
+            airagModel = airagModelService.getById(id);
+        } else if (oConvertUtils.isNotEmpty(modelType)) {
+            QueryWrapper<AiragModel> query = new QueryWrapper<>();
+            query.eq("model_type", modelType);
+            query.eq("activate_flag", 1);
+            query.orderByDesc("update_time");
+            query.last("LIMIT 1");
+            airagModel = airagModelService.getOne(query, false);
+        }
         if (airagModel == null) {
             return Result.error("未找到对应模型配置");
         }
