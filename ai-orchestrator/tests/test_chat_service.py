@@ -1,10 +1,11 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 
 from app.models.events import StreamEventType, stream_event
-from app.models.schemas import AiAppConfig, AppChatStreamRequest, ModelConfig, ModelCredential
+from app.models.schemas import AiAppConfig, AppChatStreamRequest, ChatAttachment, ModelConfig, ModelCredential
 from app.services.chat_service import ChatService
 from app.services.spec_service import SpecKitResult
 from app.skills import SkillRegistry
@@ -156,6 +157,39 @@ def test_initial_messages_include_context_history():
     ]
 
 
+def test_initial_messages_send_current_image_attachment_as_vision_input():
+    request = AppChatStreamRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="这是一张什么图片？",
+        attachments=[
+            ChatAttachment(
+                id="image-1",
+                name="image.png",
+                size=12,
+                type="image/png",
+                url="data:image/png;base64,aW1hZ2U=",
+            )
+        ],
+    )
+
+    messages = initial_messages(ChatService(FakeJeecgClient()), request)
+    user_content = messages[-1]["content"]
+
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "text"
+    assert "这是一张什么图片？" in user_content[0]["text"]
+    assert "图片附件已作为视觉输入传给模型" in user_content[0]["text"]
+    assert "暂不支持解析" not in user_content[0]["text"]
+    assert user_content[1] == {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/png;base64,aW1hZ2U=",
+            "detail": "auto",
+        },
+    }
+    assert request.attachments[0].extraction_status == "vision_input"
+
+
 def test_tool_registry_exposes_openai_tools():
     registry = ToolRegistry()
     tools = registry.openai_tools()
@@ -177,6 +211,47 @@ def test_skill_registry_lists_builtin_skills():
     assert uniapp.available_tool_names == ["weather"]
     assert uniapp.forbidden_tool_names == ["weather"]
     assert uniapp.spec_kit.enabled is True
+    assert "不要重新搭建框架" in uniapp.instruction
+    assert "不重新创建工程" in (uniapp.spec_kit.instruction or "")
+    assert "uniapp_page" in uniapp.templates
+    assert uniapp.package_path
+
+
+def test_skill_registry_loads_skill_package_directories(tmp_path: Path):
+    skill_dir = tmp_path / "custom-skill"
+    template_dir = skill_dir / "templates"
+    template_dir.mkdir(parents=True)
+    (skill_dir / "instructions.md").write_text("自定义指令正文", encoding="utf-8")
+    (template_dir / "spec-kit.md").write_text("自定义 spec-kit 指令", encoding="utf-8")
+    (template_dir / "spec.md").write_text("# Spec Template", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text(
+        """
+name: 自定义 Skill
+description: 自定义描述
+instruction_file: instructions.md
+category: 测试
+selection_mode: multiple
+spec_kit:
+  enabled: true
+  mode: suggest
+  instruction_file: templates/spec-kit.md
+templates:
+  spec: templates/spec.md
+tags:
+  - test
+""",
+        encoding="utf-8",
+    )
+
+    skill = SkillRegistry(tmp_path).get("custom-skill")
+
+    assert skill.id == "custom-skill"
+    assert skill.name == "自定义 Skill"
+    assert skill.instruction == "自定义指令正文"
+    assert skill.default_tool_names == []
+    assert skill.spec_kit.enabled is True
+    assert skill.spec_kit.instruction == "自定义 spec-kit 指令"
+    assert skill.templates["spec"].endswith("templates/spec.md")
 
 
 def test_chat_stream_selected_skill_event_and_prompt():

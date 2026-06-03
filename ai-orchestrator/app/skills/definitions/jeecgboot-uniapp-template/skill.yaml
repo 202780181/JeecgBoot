@@ -1,0 +1,25 @@
+id: jeecgboot-uniapp-template
+name: JeecgBoot UniApp 模板开发
+description: 面向 JeecgBoot 后端 + JeecgUniapp 默认模板，开发移动端页面和接口对接。
+instruction_file: instructions.md
+category: 移动端
+selection_mode: single
+available_tool_names:
+  - weather
+default_tool_names: []
+forbidden_tool_names:
+  - weather
+spec_kit:
+  enabled: true
+  mode: template
+  template: jeecgboot-uniapp-template
+  instruction_file: templates/spec-kit.md
+templates:
+  spec: templates/spec.md
+  plan: templates/plan.md
+  tasks: templates/tasks.md
+  uniapp_page: templates/uniapp-page.vue.md
+tags:
+  - JeecgBoot
+  - UniApp
+  - 移动端

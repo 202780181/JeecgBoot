@@ -24,7 +24,7 @@ class TokenBudget:
 
 
 class ContextBuilder:
-    DEFAULT_CONTEXT_WINDOW = 128000
+    DEFAULT_CONTEXT_WINDOW = 800000
     DEFAULT_MAX_OUTPUT_TOKENS = 4096
     DEFAULT_REASONING_RESERVE = 0
     DEFAULT_SAFETY_MARGIN = 4096
@@ -42,7 +42,7 @@ class ContextBuilder:
         request: AppChatStreamRequest,
         model: ModelConfig,
         system_prompt: str,
-        current_user_content: str,
+        current_user_content,
     ) -> list[dict]:
         budget = self._token_budget(model)
         required_messages = [
@@ -163,7 +163,7 @@ class ContextBuilder:
                 break
             truncated = {
                 **message,
-                "content": self._fit_text_to_tokens(message["content"], remaining - 4, min_chars=400),
+                "content": self._fit_text_to_tokens(self._message_text(message), remaining - 4, min_chars=400),
             }
             if truncated["content"]:
                 packed_reversed.append(truncated)
@@ -188,7 +188,7 @@ class ContextBuilder:
             return used_tokens
         truncated = {
             **message,
-            "content": self._fit_text_to_tokens(message["content"], remaining - 4, min_chars=min_chars),
+            "content": self._fit_text_to_tokens(self._message_text(message), remaining - 4, min_chars=min_chars),
         }
         if not truncated["content"]:
             return used_tokens
@@ -208,6 +208,18 @@ class ContextBuilder:
         if len(value) <= max_chars:
             return value
         return f"{value[:max_chars].rstrip()}\n[内容已按 token budget 截断]"
+
+    def _message_text(self, message: dict) -> str:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text") or ""))
+            return "\n".join(text for text in texts if text)
+        return str(content or "")
 
     def _int_param(self, params: dict, keys: tuple[str, ...], default: int) -> int:
         for key in keys:

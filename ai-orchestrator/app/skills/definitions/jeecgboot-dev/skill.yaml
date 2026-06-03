@@ -1,0 +1,25 @@
+id: jeecgboot-dev
+name: JeecgBoot 规范开发
+description: 按 JeecgBoot 后端、Vue3 前端、权限、字典、菜单等官方规范分析和实现需求。
+instruction_file: instructions.md
+category: JeecgBoot
+selection_mode: multiple
+available_tool_names:
+  - weather
+  - web_search
+default_tool_names:
+  - weather
+forbidden_tool_names: []
+spec_kit:
+  enabled: true
+  mode: suggest
+  template: jeecgboot-dev
+  instruction_file: templates/spec-kit.md
+templates:
+  spec: templates/spec.md
+  plan: templates/plan.md
+  tasks: templates/tasks.md
+tags:
+  - JeecgBoot
+  - 后端
+  - Vue3

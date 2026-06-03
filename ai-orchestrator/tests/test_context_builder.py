@@ -44,6 +44,16 @@ def test_context_builder_keeps_required_messages_under_small_budget():
     assert messages[-1] == {"role": "user", "content": "当前输入必须保留"}
 
 
+def test_context_builder_defaults_to_safe_large_context_window():
+    builder = ContextBuilder()
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    budget = builder._token_budget(model)
+
+    assert budget.context_window == 800000
+    assert budget.input_budget == 791808
+
+
 def test_context_builder_uses_active_context_snapshot_as_summary_context():
     request = AppChatStreamRequest(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),

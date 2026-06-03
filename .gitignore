@@ -26,3 +26,9 @@ derby.log
 **/*.egg-info/
 **/.mypy_cache/
 **/.ruff_cache/
+
+## ai builder generated workspaces
+/ai-builder-workspaces/
+
+## accidental Windows drive paths generated on macOS
+/*:\\*

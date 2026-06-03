@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import base64
 from io import BytesIO
 import json
 from json import JSONDecodeError
@@ -416,10 +417,17 @@ class ChatService:
                 "联网搜索已开启。遇到实时信息、新闻、价格、版本、官方文档、网页资料或你不确定的信息时，"
                 "优先调用 web_search 工具；回答时要基于搜索结果总结，并尽量附上来源链接。"
             )
-        current_user_content = await self._user_input_with_attachments(request)
+        current_user_content = await self._current_user_content_with_attachments(request)
         if model is None:
             model = ModelConfig(id="default", model_name="default", base_url="http://localhost")
         return await self.context_builder.build(request, model, prompt, current_user_content)
+
+    async def _current_user_content_with_attachments(self, request: AppChatStreamRequest):
+        text = await self._user_input_with_attachments(request)
+        image_parts = await self._image_content_parts(request.attachments)
+        if not image_parts:
+            return text
+        return [{"type": "text", "text": text}, *image_parts]
 
     async def _user_input_with_attachments(self, request: AppChatStreamRequest) -> str:
         if not request.attachments:
@@ -432,6 +440,9 @@ class ChatService:
             size = attachment.size if attachment.size is not None else "unknown"
             url = attachment.url or attachment.path or ""
             lines.append(f"{index}. {name} | type={file_type} | size={size} | url={url}")
+            if self._is_image_attachment(attachment):
+                lines.append("图片附件已作为视觉输入传给模型。")
+                continue
             attachment_text = extracted_attachments.get(index - 1, "")
             if attachment_text:
                 lines.append("```text")
@@ -446,6 +457,10 @@ class ChatService:
     async def _extract_attachments(self, request: AppChatStreamRequest) -> dict[int, str]:
         extracted: dict[int, str] = {}
         for index, attachment in enumerate(request.attachments):
+            if self._is_image_attachment(attachment):
+                attachment.extraction_status = "vision_input"
+                attachment.extraction_error = None
+                continue
             if attachment.extracted_text:
                 text = self._limit_attachment_text(attachment.extracted_text)
                 attachment.extracted_text = text
@@ -483,6 +498,61 @@ class ChatService:
         if suffix == ".xlsx":
             return self._extract_xlsx_text(content)
         raise ValueError(f"暂不支持解析 {suffix or attachment.type or 'unknown'} 文件正文")
+
+    async def _image_content_parts(self, attachments) -> list[dict]:
+        parts: list[dict] = []
+        for attachment in attachments:
+            if not self._is_image_attachment(attachment):
+                continue
+            image_url = await self._image_data_url(attachment)
+            if not image_url:
+                image_url = attachment.url or attachment.path
+            if not image_url:
+                continue
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url,
+                        "detail": "auto",
+                    },
+                }
+            )
+        return parts
+
+    async def _image_data_url(self, attachment) -> str | None:
+        url = attachment.url or ""
+        if url.startswith("data:image/"):
+            return url
+        if not url:
+            return None
+        try:
+            content = await self._download_attachment(url)
+        except Exception:
+            return None
+        if not content:
+            return None
+        if len(content) > 20 * 1024 * 1024:
+            return None
+        mime_type = attachment.type if (attachment.type or "").startswith("image/") else self._image_mime_type(attachment)
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _is_image_attachment(self, attachment) -> bool:
+        file_type = (attachment.type or "").lower()
+        if file_type.startswith("image/"):
+            return True
+        return self._attachment_suffix(attachment) in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+    def _image_mime_type(self, attachment) -> str:
+        suffix = self._attachment_suffix(attachment)
+        if suffix in {".jpg", ".jpeg"}:
+            return "image/jpeg"
+        if suffix == ".webp":
+            return "image/webp"
+        if suffix == ".gif":
+            return "image/gif"
+        return "image/png"
 
     async def _download_attachment(self, url: str) -> bytes:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
