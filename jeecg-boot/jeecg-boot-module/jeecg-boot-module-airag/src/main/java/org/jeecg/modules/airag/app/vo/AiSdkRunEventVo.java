@@ -4,23 +4,21 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.util.Date;
-import java.util.List;
 import java.util.Map;
 
 /**
- * AI SDK 消息视图
+ * AI SDK Run 事件视图
  */
 @Data
-public class AiSdkMessageVo {
+public class AiSdkRunEventVo {
     private String id;
+    private String runId;
     private String conversationId;
-    private String role;
-    private String content;
+    private Integer sequence;
+    private String eventType;
+    private String phase;
     private String status;
-    private String modelId;
-    private List<String> skillIds;
-    private Map<String, Object> metadata;
-    private List<AiSdkRunEventVo> runEvents;
+    private Map<String, Object> payload;
 
     @JsonFormat(timezone = "GMT+8", pattern = "yyyy-MM-dd HH:mm:ss")
     private Date createTime;

@@ -4,6 +4,10 @@ from app.services.token_counter import TokenCounter
 
 class FragmentReranker:
     TYPE_BASE_SCORE = {
+        "workspace_snapshot": 0.72,
+        "file_change": 0.68,
+        "build_result": 0.66,
+        "preview_url": 0.62,
         "skill_result": 0.55,
         "tool_result": 0.5,
         "source": 0.45,
@@ -16,6 +20,10 @@ class FragmentReranker:
         "tool_result": ("工具", "执行结果", "天气", "tool", "result"),
         "source": ("来源", "网页", "链接", "新闻", "搜索", "source", "url"),
         "context_selection": ("上下文", "选择", "为什么", "context"),
+        "workspace_snapshot": ("workspace", "工作区", "项目", "继续", "模板", "文件结构", "workspaceId"),
+        "file_change": ("修改", "写入", "文件", "patch", "变更", "代码", "页面"),
+        "build_result": ("构建", "build", "h5", "报错", "日志", "部署", "编译"),
+        "preview_url": ("预览", "preview", "地址", "url", "打开", "访问"),
     }
 
     def __init__(self, token_counter: TokenCounter | None = None) -> None:
@@ -89,6 +97,18 @@ class FragmentReranker:
 
     def _key(self, fragment: ContextFragment) -> str:
         metadata = fragment.metadata or {}
+        workspace_id = metadata.get("workspaceId")
+        if workspace_id:
+            path = metadata.get("path")
+            changed_files = metadata.get("changedFiles")
+            if path:
+                return f"{fragment.type}:workspace:{workspace_id}:path:{path}"
+            if changed_files:
+                return f"{fragment.type}:workspace:{workspace_id}:changed:{changed_files}"
+            preview_url = metadata.get("previewUrl")
+            if preview_url:
+                return f"{fragment.type}:workspace:{workspace_id}:preview:{preview_url}"
+            return f"{fragment.type}:workspace:{workspace_id}"
         url = metadata.get("url") or metadata.get("path")
         if url:
             return f"{fragment.type}:url:{url}"

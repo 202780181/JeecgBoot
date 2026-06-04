@@ -17,15 +17,20 @@ import org.jeecg.modules.airag.app.config.AiOrchestratorProperties;
 import org.jeecg.modules.airag.app.entity.AiSdkConversation;
 import org.jeecg.modules.airag.app.entity.AiSdkContextFragment;
 import org.jeecg.modules.airag.app.entity.AiSdkMessage;
+import org.jeecg.modules.airag.app.entity.AiSdkRun;
+import org.jeecg.modules.airag.app.entity.AiSdkRunEvent;
 import org.jeecg.modules.airag.app.entity.AiragApp;
 import org.jeecg.modules.airag.app.mapper.AiSdkConversationMapper;
 import org.jeecg.modules.airag.app.mapper.AiSdkContextFragmentMapper;
 import org.jeecg.modules.airag.app.mapper.AiSdkMessageMapper;
+import org.jeecg.modules.airag.app.mapper.AiSdkRunEventMapper;
+import org.jeecg.modules.airag.app.mapper.AiSdkRunMapper;
 import org.jeecg.modules.airag.app.service.IAiSdkConversationService;
 import org.jeecg.modules.airag.app.vo.AiSdkConversationCreateParams;
 import org.jeecg.modules.airag.app.vo.AiSdkConversationRenameParams;
 import org.jeecg.modules.airag.app.vo.AiSdkConversationVo;
 import org.jeecg.modules.airag.app.vo.AiSdkMessageVo;
+import org.jeecg.modules.airag.app.vo.AiSdkRunEventVo;
 import org.jeecg.modules.airag.app.vo.AppDebugParams;
 import org.jeecg.modules.airag.llm.consts.LLMConsts;
 import org.jeecg.modules.airag.llm.entity.AiragModel;
@@ -60,6 +65,12 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
 
     @Autowired
     private AiSdkContextFragmentMapper aiSdkContextFragmentMapper;
+
+    @Autowired
+    private AiSdkRunMapper aiSdkRunMapper;
+
+    @Autowired
+    private AiSdkRunEventMapper aiSdkRunEventMapper;
 
     @Autowired
     private EmbeddingHandler embeddingHandler;
@@ -139,6 +150,39 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
     }
 
     @Override
+    public AiSdkMessage saveAssistantMessageProjection(String messageId, String conversationId, String content, String status, String modelId, Map<String, Object> metadata) {
+        if (oConvertUtils.isEmpty(content) && (metadata == null || metadata.isEmpty())) {
+            return null;
+        }
+        JSONObject metadataJson = metadata == null ? new JSONObject() : new JSONObject(metadata);
+        AiSdkMessage message = oConvertUtils.isEmpty(messageId) ? null : aiSdkMessageMapper.selectById(messageId);
+        if (message == null) {
+            message = new AiSdkMessage()
+                    .setId(oConvertUtils.isEmpty(messageId) ? UUIDGenerator.generate() : messageId)
+                    .setConversationId(conversationId)
+                    .setRole("assistant")
+                    .setCreateTime(new Date());
+            message
+                    .setContent(oConvertUtils.getString(content))
+                    .setStatus(oConvertUtils.getString(status, MESSAGE_STATUS_COMPLETED))
+                    .setModelId(modelId)
+                    .setMetadataJson(metadataJson.toJSONString());
+            aiSdkMessageMapper.insert(message);
+        } else {
+            message
+                    .setConversationId(conversationId)
+                    .setRole("assistant")
+                    .setContent(oConvertUtils.getString(content))
+                    .setStatus(oConvertUtils.getString(status, MESSAGE_STATUS_COMPLETED))
+                    .setModelId(modelId)
+                    .setMetadataJson(metadataJson.toJSONString());
+            aiSdkMessageMapper.updateById(message);
+        }
+        touchConversation(conversationId);
+        return message;
+    }
+
+    @Override
     public List<Map<String, Object>> findLatestAttachments(String conversationId, HttpServletRequest httpRequest) {
         assertConversationOwner(conversationId, httpRequest);
         LambdaQueryWrapper<AiSdkMessage> query = new LambdaQueryWrapper<>();
@@ -159,6 +203,7 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         AiSdkConversation conversation = assertConversationOwner(conversationId, httpRequest);
         Map<String, Object> contextSource = new HashMap<>();
         contextSource.put("summary", buildSummaryContext(conversation));
+        contextSource.put("active_task_snapshots", buildRecentFragmentContext(conversationId, currentMessageId, "active_task_snapshot"));
         contextSource.put("recent_messages", buildRecentMessageContext(conversationId, currentMessageId));
         contextSource.put("relevant_messages", buildRelevantMessageContext(conversationId, currentMessageId, queryText));
         contextSource.put("relevant_fragments", buildRelevantFragmentContext(conversationId, currentMessageId, queryText));
@@ -377,10 +422,12 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         LambdaQueryWrapper<AiSdkMessage> query = new LambdaQueryWrapper<>();
         query.eq(AiSdkMessage::getConversationId, conversationId);
         query.orderByAsc(AiSdkMessage::getCreateTime);
+        List<AiSdkMessage> messages = aiSdkMessageMapper.selectList(query);
         List<AiSdkMessageVo> result = new ArrayList<>();
-        for (AiSdkMessage message : aiSdkMessageMapper.selectList(query)) {
+        for (AiSdkMessage message : messages) {
             result.add(toMessageVo(message));
         }
+        attachRunEvents(conversationId, result);
         return result;
     }
 
@@ -407,6 +454,12 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         LambdaQueryWrapper<AiSdkMessage> messageQuery = new LambdaQueryWrapper<>();
         messageQuery.eq(AiSdkMessage::getConversationId, conversationId);
         aiSdkMessageMapper.delete(messageQuery);
+        LambdaQueryWrapper<AiSdkRunEvent> runEventQuery = new LambdaQueryWrapper<>();
+        runEventQuery.eq(AiSdkRunEvent::getConversationId, conversationId);
+        aiSdkRunEventMapper.delete(runEventQuery);
+        LambdaQueryWrapper<AiSdkRun> runQuery = new LambdaQueryWrapper<>();
+        runQuery.eq(AiSdkRun::getConversationId, conversationId);
+        aiSdkRunMapper.delete(runQuery);
         removeById(conversationId);
     }
 
@@ -894,6 +947,14 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         }
         if ("attachment_summary".equals(fragment.getType())) {
             score += 4;
+        } else if ("workspace_snapshot".equals(fragment.getType())) {
+            score += 6;
+        } else if ("build_result".equals(fragment.getType())) {
+            score += 5;
+        } else if ("file_change".equals(fragment.getType())) {
+            score += 5;
+        } else if ("preview_url".equals(fragment.getType())) {
+            score += 4;
         } else if ("skill_result".equals(fragment.getType())) {
             score += 3;
         } else if ("tool_result".equals(fragment.getType())) {
@@ -970,12 +1031,212 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
             if ("web_search".equals(toolName)) {
                 continue;
             }
+            if (appendBuilderToolResultFragment(fragments, message, toolResult, toolName)) {
+                continue;
+            }
             String title = oConvertUtils.getString(toolResult.getString("title"), toolName);
             JSONObject result = toolResult.getJSONObject("result");
             String resultText = result == null ? toolResult.toJSONString() : result.toJSONString();
             String text = "工具返回：" + title + "\n工具名称=" + toolName + "\n结果=" + trimText(resultText, 1800);
             fragments.add(buildFragment(message, "tool_result", text, toolResult));
         }
+    }
+
+    private boolean appendBuilderToolResultFragment(List<AiSdkContextFragment> fragments, AiSdkMessage message, JSONObject toolResult, String toolName) {
+        if (oConvertUtils.isEmpty(toolName) || !toolName.startsWith("builder_")) {
+            return false;
+        }
+        JSONObject result = toolResult.getJSONObject("result");
+        if (result == null) {
+            result = new JSONObject();
+        }
+        JSONObject metadata = buildBuilderFragmentMetadata(toolResult, result);
+        String type;
+        String text;
+        switch (toolName) {
+            case "builder_create_workspace":
+                type = "workspace_snapshot";
+                text = buildBuilderWorkspaceText(toolName, result);
+                break;
+            case "builder_get_snapshot":
+                type = "workspace_snapshot";
+                text = buildBuilderSnapshotText(toolName, result);
+                break;
+            case "builder_write_file":
+                type = "file_change";
+                text = buildBuilderWriteFileText(toolName, result);
+                break;
+            case "builder_apply_patch":
+                type = "file_change";
+                text = buildBuilderPatchText(toolName, result);
+                break;
+            case "builder_build_h5":
+                type = "build_result";
+                text = buildBuilderBuildText(toolName, result);
+                break;
+            case "builder_start_preview_h5":
+                type = "preview_url";
+                text = buildBuilderPreviewText(toolName, result);
+                break;
+            default:
+                type = "tool_result";
+                text = "Builder 工具返回：" + toolName + "\n结果=" + trimText(result.toJSONString(), 1800);
+                break;
+        }
+        fragments.add(buildFragment(message, type, text, metadata));
+        return true;
+    }
+
+    private JSONObject buildBuilderFragmentMetadata(JSONObject toolResult, JSONObject result) {
+        JSONObject metadata = new JSONObject();
+        String toolName = toolResult.getString("toolName");
+        metadata.put("toolName", toolName);
+        metadata.put("status", oConvertUtils.getString(toolResult.getString("status"), result.getString("status")));
+        metadata.put("title", toolResult.getString("title"));
+        metadata.put("toolCallId", toolResult.getString("toolCallId"));
+        metadata.put("workspaceId", extractBuilderWorkspaceId(result));
+        metadata.put("previewUrl", result.getString("previewUrl"));
+        metadata.put("path", result.getString("path"));
+        metadata.put("additions", result.getInteger("additions"));
+        metadata.put("deletions", result.getInteger("deletions"));
+        metadata.put("changedFiles", result.getJSONArray("changedFiles"));
+        metadata.put("fileChanges", result.getJSONArray("fileChanges"));
+        metadata.put("rawResult", trimText(result.toJSONString(), 2500));
+        return metadata;
+    }
+
+    private String buildBuilderWorkspaceText(String toolName, JSONObject result) {
+        JSONObject workspace = result.getJSONObject("workspace");
+        JSONObject snapshot = result.getJSONObject("snapshot");
+        String workspaceId = extractBuilderWorkspaceId(result);
+        String workspacePath = workspace == null ? "" : oConvertUtils.getString(workspace.getString("path"));
+        String templatePath = workspace == null ? "" : oConvertUtils.getString(workspace.getString("templatePath"));
+        JSONArray importantFiles = snapshot == null ? null : snapshot.getJSONArray("importantFiles");
+        int fileCount = getJsonArraySize(snapshot == null ? null : snapshot.getJSONArray("files"));
+        String text = "Builder 工作区已创建：workspaceId=" + workspaceId;
+        if (oConvertUtils.isNotEmpty(workspacePath)) {
+            text += "\n工作区路径：" + workspacePath;
+        }
+        if (oConvertUtils.isNotEmpty(templatePath)) {
+            text += "\n模板路径：" + templatePath;
+        }
+        text += "\n文件数量=" + fileCount + "\n重要文件：" + formatJsonArray(importantFiles);
+        return text + "\n工具名称=" + toolName;
+    }
+
+    private String buildBuilderSnapshotText(String toolName, JSONObject result) {
+        JSONObject snapshot = result.getJSONObject("snapshot");
+        if (snapshot == null) {
+            snapshot = result;
+        }
+        String workspaceId = extractBuilderWorkspaceId(result);
+        int fileCount = getJsonArraySize(snapshot.getJSONArray("files"));
+        JSONArray importantFiles = snapshot.getJSONArray("importantFiles");
+        String root = oConvertUtils.getString(snapshot.getString("root"));
+        String text = "Builder 工作区快照：workspaceId=" + workspaceId + "\n文件数量=" + fileCount;
+        if (oConvertUtils.isNotEmpty(root)) {
+            text += "\n工作区根目录：" + root;
+        }
+        text += "\n重要文件：" + formatJsonArray(importantFiles);
+        return text + "\n工具名称=" + toolName;
+    }
+
+    private String buildBuilderWriteFileText(String toolName, JSONObject result) {
+        String workspaceId = extractBuilderWorkspaceId(result);
+        String path = oConvertUtils.getString(result.getString("path"));
+        String bytesWritten = oConvertUtils.getString(result.get("bytesWritten"));
+        String additions = oConvertUtils.getString(result.get("additions"));
+        String deletions = oConvertUtils.getString(result.get("deletions"));
+        return "Builder 文件已写入：workspaceId=" + workspaceId
+                + "\n文件路径：" + path
+                + "\n写入字节数=" + bytesWritten
+                + "\n变更行数：+" + additions + " -" + deletions
+                + "\n工具名称=" + toolName;
+    }
+
+    private String buildBuilderPatchText(String toolName, JSONObject result) {
+        String workspaceId = extractBuilderWorkspaceId(result);
+        String text = "Builder 补丁已应用：workspaceId=" + workspaceId
+                + "\n变更文件：" + formatJsonArray(result.getJSONArray("changedFiles"))
+                + "\n文件变更：" + formatJsonArray(result.getJSONArray("fileChanges"));
+        String stdout = oConvertUtils.getString(result.getString("stdout"));
+        String stderr = oConvertUtils.getString(result.getString("stderr"));
+        if (oConvertUtils.isNotEmpty(stdout)) {
+            text += "\nstdout：" + trimText(stdout, 900);
+        }
+        if (oConvertUtils.isNotEmpty(stderr)) {
+            text += "\nstderr：" + trimText(stderr, 900);
+        }
+        return text + "\n工具名称=" + toolName;
+    }
+
+    private String buildBuilderBuildText(String toolName, JSONObject result) {
+        String workspaceId = extractBuilderWorkspaceId(result);
+        String status = oConvertUtils.getString(result.getString("status"));
+        String exitCode = oConvertUtils.getString(result.get("exitCode"));
+        String command = result.getJSONArray("command") == null ? oConvertUtils.getString(result.getString("command")) : result.getJSONArray("command").toJSONString();
+        String text = "Builder H5 构建结果：workspaceId=" + workspaceId
+                + "\n状态=" + status
+                + "，exitCode=" + exitCode
+                + "\n命令=" + command;
+        String stdout = oConvertUtils.getString(result.getString("stdout"));
+        String stderr = oConvertUtils.getString(result.getString("stderr"));
+        if (oConvertUtils.isNotEmpty(stdout)) {
+            text += "\nstdout：" + trimText(stdout, 1200);
+        }
+        if (oConvertUtils.isNotEmpty(stderr)) {
+            text += "\nstderr：" + trimText(stderr, 1200);
+        }
+        return text + "\n工具名称=" + toolName;
+    }
+
+    private String buildBuilderPreviewText(String toolName, JSONObject result) {
+        String workspaceId = extractBuilderWorkspaceId(result);
+        String status = oConvertUtils.getString(result.getString("status"));
+        String previewUrl = oConvertUtils.getString(result.getString("previewUrl"));
+        String port = oConvertUtils.getString(result.get("port"));
+        String log = oConvertUtils.getString(result.getString("log"));
+        String text = "Builder H5 预览已启动：workspaceId=" + workspaceId
+                + "\n状态=" + status
+                + "\n预览地址=" + previewUrl
+                + "\n端口=" + port;
+        if (oConvertUtils.isNotEmpty(log)) {
+            text += "\n日志：" + trimText(log, 900);
+        }
+        return text + "\n工具名称=" + toolName;
+    }
+
+    private String extractBuilderWorkspaceId(JSONObject result) {
+        String workspaceId = oConvertUtils.getString(result.getString("workspaceId"));
+        if (oConvertUtils.isNotEmpty(workspaceId)) {
+            return workspaceId;
+        }
+        JSONObject workspace = result.getJSONObject("workspace");
+        if (workspace != null) {
+            workspaceId = oConvertUtils.getString(workspace.getString("id"), workspace.getString("workspaceId"));
+            if (oConvertUtils.isNotEmpty(workspaceId)) {
+                return workspaceId;
+            }
+        }
+        JSONObject snapshot = result.getJSONObject("snapshot");
+        if (snapshot != null) {
+            workspaceId = oConvertUtils.getString(snapshot.getString("workspaceId"), snapshot.getString("id"));
+            if (oConvertUtils.isNotEmpty(workspaceId)) {
+                return workspaceId;
+            }
+        }
+        return "";
+    }
+
+    private int getJsonArraySize(JSONArray array) {
+        return array == null ? 0 : array.size();
+    }
+
+    private String formatJsonArray(JSONArray array) {
+        if (array == null || array.isEmpty()) {
+            return "[]";
+        }
+        return trimText(array.toJSONString(), 1000);
     }
 
     private void appendSourceFragments(List<AiSdkContextFragment> fragments, AiSdkMessage message, JSONArray sources) {
@@ -1232,6 +1493,69 @@ public class AiSdkConversationServiceImpl extends ServiceImpl<AiSdkConversationM
         vo.setSkillIds(parseSkillIds(message.getSkillIdsJson()));
         vo.setMetadata(parseMetadata(message.getMetadataJson()));
         vo.setCreateTime(message.getCreateTime());
+        return vo;
+    }
+
+    private void attachRunEvents(String conversationId, List<AiSdkMessageVo> messages) {
+        List<String> assistantMessageIds = new ArrayList<>();
+        for (AiSdkMessageVo message : messages) {
+            if ("assistant".equals(message.getRole()) && oConvertUtils.isNotEmpty(message.getId())) {
+                assistantMessageIds.add(message.getId());
+            }
+        }
+        if (assistantMessageIds.isEmpty()) {
+            return;
+        }
+
+        LambdaQueryWrapper<AiSdkRun> runQuery = new LambdaQueryWrapper<>();
+        runQuery.eq(AiSdkRun::getConversationId, conversationId);
+        runQuery.in(AiSdkRun::getAssistantMessageId, assistantMessageIds);
+        List<AiSdkRun> runs = aiSdkRunMapper.selectList(runQuery);
+        if (runs.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> messageRunIds = new HashMap<>();
+        List<String> runIds = new ArrayList<>();
+        for (AiSdkRun run : runs) {
+            if (oConvertUtils.isEmpty(run.getAssistantMessageId()) || oConvertUtils.isEmpty(run.getId())) {
+                continue;
+            }
+            messageRunIds.put(run.getAssistantMessageId(), run.getId());
+            runIds.add(run.getId());
+        }
+        if (runIds.isEmpty()) {
+            return;
+        }
+
+        LambdaQueryWrapper<AiSdkRunEvent> eventQuery = new LambdaQueryWrapper<>();
+        eventQuery.eq(AiSdkRunEvent::getConversationId, conversationId);
+        eventQuery.in(AiSdkRunEvent::getRunId, runIds);
+        eventQuery.orderByAsc(AiSdkRunEvent::getSequence);
+        Map<String, List<AiSdkRunEventVo>> eventsByRunId = new HashMap<>();
+        for (AiSdkRunEvent event : aiSdkRunEventMapper.selectList(eventQuery)) {
+            eventsByRunId.computeIfAbsent(event.getRunId(), key -> new ArrayList<>()).add(toRunEventVo(event));
+        }
+
+        for (AiSdkMessageVo message : messages) {
+            String runId = messageRunIds.get(message.getId());
+            if (oConvertUtils.isNotEmpty(runId)) {
+                message.setRunEvents(eventsByRunId.getOrDefault(runId, new ArrayList<>()));
+            }
+        }
+    }
+
+    private AiSdkRunEventVo toRunEventVo(AiSdkRunEvent event) {
+        AiSdkRunEventVo vo = new AiSdkRunEventVo();
+        vo.setId(event.getId());
+        vo.setRunId(event.getRunId());
+        vo.setConversationId(event.getConversationId());
+        vo.setSequence(event.getSequence());
+        vo.setEventType(event.getEventType());
+        vo.setPhase(event.getPhase());
+        vo.setStatus(event.getStatus());
+        vo.setPayload(parseMetadata(event.getPayloadJson()));
+        vo.setCreateTime(event.getCreateTime());
         return vo;
     }
 

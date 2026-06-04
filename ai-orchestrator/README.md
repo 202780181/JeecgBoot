@@ -48,6 +48,37 @@ POST /api/tasks/execute
 GET  /api/capabilities
 ```
 
+## Builder Agent
+
+Builder Agent 用于基于本地 `JeecgUniappTemplet` 模板创建受控代码工作区。生成项目会放到仓库根目录的
+`ai-builder-workspaces/`，该目录已被 git 忽略。
+
+```text
+POST /api/builder/workspaces
+GET  /api/builder/workspaces/{workspaceId}/snapshot
+POST /api/builder/workspaces/{workspaceId}/files/read
+POST /api/builder/workspaces/{workspaceId}/files/write
+POST /api/builder/workspaces/{workspaceId}/patch
+POST /api/builder/workspaces/{workspaceId}/build/h5
+POST /api/builder/workspaces/{workspaceId}/preview/h5
+```
+
+示例：
+
+```bash
+curl -X POST http://localhost:9100/api/builder/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"conversationId":"ai-sdk-dev-demo"}'
+```
+
+当前 Builder 工具只允许操作工作区内部文件，并且命令执行走白名单：
+
+```text
+pnpm install
+pnpm build:h5
+pnpm dev:h5 --port {allocatedPort}
+```
+
 ## 官方能力优先路由
 
 优先级：

@@ -22,6 +22,7 @@ class SkillSpec(BaseModel):
     available_tool_names: list[str] | None = None
     default_tool_names: list[str] = Field(default_factory=list)
     forbidden_tool_names: list[str] = Field(default_factory=list)
+    max_tool_rounds: int | None = None
     spec_kit: SpecKitBinding = Field(default_factory=SpecKitBinding)
     templates: dict[str, str] = Field(default_factory=dict)
     package_path: str | None = None

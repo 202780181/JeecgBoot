@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     spec_workspace: str = ".spec-workspace"
     spec_kit_package: str = "git+https://github.com/github/spec-kit.git"
     spec_kit_timeout_seconds: int = 120
+    builder_workspace_root: str = "ai-builder-workspaces"
+    builder_template_path: str = "JeecgUniappTemplet"
+    builder_project_root_workspace_id: str = "jeecgboot-root"
+    builder_project_root_path: str = "."
+    builder_preview_host: str = "127.0.0.1"
+    builder_preview_port_start: int = 9300
+    builder_preview_port_end: int = 9399
+    builder_command_timeout_seconds: int = 180
+    max_tool_rounds: int = 24
 
 
 settings = Settings()

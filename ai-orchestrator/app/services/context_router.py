@@ -10,6 +10,7 @@ class ContextSelection(BaseModel):
     summary_text: str | None = Field(default=None, alias="summaryText")
     summary_label: str = Field(default="会话摘要", alias="summaryLabel")
     context_version: int | None = Field(default=None, alias="contextVersion")
+    active_task_snapshots: list[ContextFragment] = Field(default_factory=list, alias="activeTaskSnapshots")
     selected_fragments: list[ContextFragment] = Field(default_factory=list, alias="selectedFragments")
     selected_recent_messages: list[dict] = Field(default_factory=list, alias="selectedRecentMessages")
     selected_relevant_messages: list[dict] = Field(default_factory=list, alias="selectedRelevantMessages")
@@ -33,6 +34,7 @@ class ContextRouter:
         summary_text = (request.context_source.summary.text or "").strip() or None
         summary_metadata = request.context_source.summary.metadata or {}
         summary_label = "活跃上下文快照" if summary_metadata.get("contextMode") == "active_snapshot" else "会话摘要"
+        active_task_snapshots = self._active_task_snapshots(request)
         selected_fragments = self._selected_fragments(request, attachment_decision)
         selected_recent_messages = self._selected_recent_messages(request)
         selected_relevant_messages = self._selected_relevant_messages(request, selected_recent_messages)
@@ -40,6 +42,7 @@ class ContextRouter:
         token_ledger = self._token_ledger(
             request=request,
             summary_text=summary_text,
+            active_task_snapshots=active_task_snapshots,
             selected_fragments=selected_fragments,
             selected_recent_messages=selected_recent_messages,
             selected_relevant_messages=selected_relevant_messages,
@@ -50,6 +53,7 @@ class ContextRouter:
             summaryText=summary_text,
             summaryLabel=summary_label,
             contextVersion=request.context_source.summary.context_version,
+            activeTaskSnapshots=active_task_snapshots,
             selectedFragments=selected_fragments,
             selectedRecentMessages=selected_messages,
             selectedRelevantMessages=selected_relevant_messages,
@@ -60,6 +64,20 @@ class ContextRouter:
             tokenLedger=token_ledger,
         )
 
+    def _active_task_snapshots(self, request: AppChatStreamRequest) -> list[ContextFragment]:
+        snapshots = [
+            fragment
+            for fragment in request.context_source.active_task_snapshots
+            if fragment.type == "active_task_snapshot" and (fragment.text or "").strip()
+        ]
+        if not snapshots:
+            snapshots = [
+                fragment
+                for fragment in request.context_source.relevant_fragments
+                if fragment.type == "active_task_snapshot" and (fragment.text or "").strip()
+            ]
+        return self._dedupe_fragments(snapshots)[:3]
+
     def _selected_fragments(
         self,
         request: AppChatStreamRequest,
@@ -68,10 +86,28 @@ class ContextRouter:
         fragments = [
             fragment
             for fragment in request.context_source.relevant_fragments
-            if fragment.type != "attachment_summary"
+            if fragment.type not in {"attachment_summary", "active_task_snapshot"}
         ]
         fragments.extend(attachment_decision.selected_fragments)
         return self.fragment_reranker.rerank(request.input, fragments, limit=20)
+
+    def _dedupe_fragments(self, fragments: list[ContextFragment]) -> list[ContextFragment]:
+        seen: set[str] = set()
+        result: list[ContextFragment] = []
+        for fragment in fragments:
+            metadata = fragment.metadata or {}
+            key = str(
+                metadata.get("workspaceId")
+                or metadata.get("activeWorkspaceId")
+                or fragment.id
+                or fragment.message_id
+                or hash((fragment.text or "").strip())
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(fragment)
+        return result
 
     def _selected_recent_messages(self, request: AppChatStreamRequest) -> list[dict]:
         source_messages = request.context_source.recent_messages or []
@@ -127,6 +163,7 @@ class ContextRouter:
         *,
         request: AppChatStreamRequest,
         summary_text: str | None,
+        active_task_snapshots: list[ContextFragment],
         selected_fragments: list[ContextFragment],
         selected_recent_messages: list[dict],
         selected_relevant_messages: list[dict],
@@ -134,6 +171,10 @@ class ContextRouter:
         attachment_decision: AttachmentContextDecision,
     ) -> dict:
         summary_tokens = self.token_counter.count(summary_text)
+        active_task_snapshot_tokens = sum(
+            fragment.token_count if fragment.token_count is not None else self.token_counter.count(fragment.text)
+            for fragment in active_task_snapshots
+        )
         fragment_tokens = sum(
             fragment.token_count if fragment.token_count is not None else self.token_counter.count(fragment.text)
             for fragment in selected_fragments
@@ -144,12 +185,17 @@ class ContextRouter:
         fragment_type_counts = self._fragment_type_counts(selected_fragments)
         return {
             "summaryTokenCount": summary_tokens,
+            "activeTaskSnapshotCount": len(active_task_snapshots),
+            "activeTaskSnapshotTokens": active_task_snapshot_tokens,
             "selectedFragmentCount": len(selected_fragments),
             "selectedFragmentTokens": fragment_tokens,
             "selectedSkillResultCount": fragment_type_counts.get("skill_result", 0),
             "selectedToolResultCount": fragment_type_counts.get("tool_result", 0),
             "selectedSourceCount": fragment_type_counts.get("source", 0),
             "selectedWorkspaceSnapshotCount": fragment_type_counts.get("workspace_snapshot", 0),
+            "selectedFileChangeCount": fragment_type_counts.get("file_change", 0),
+            "selectedBuildResultCount": fragment_type_counts.get("build_result", 0),
+            "selectedPreviewUrlCount": fragment_type_counts.get("preview_url", 0),
             "selectedRecentMessageCount": len(selected_recent_messages),
             "selectedRecentMessageTokens": recent_message_tokens,
             "selectedRelevantMessageCount": len(selected_relevant_messages),
@@ -161,9 +207,10 @@ class ContextRouter:
                 exclude={"selected_fragments"},
             ),
             "availableRelevantFragmentCount": len(request.context_source.relevant_fragments),
+            "availableActiveTaskSnapshotCount": len(request.context_source.active_task_snapshots),
             "availableRecentMessageCount": len(request.context_source.recent_messages),
             "availableRelevantMessageCount": len(request.context_source.relevant_messages),
-            "estimatedContextInputTokens": summary_tokens + fragment_tokens + selected_message_tokens,
+            "estimatedContextInputTokens": summary_tokens + active_task_snapshot_tokens + fragment_tokens + selected_message_tokens,
         }
 
     def _fragment_type_counts(self, fragments: list[ContextFragment]) -> dict[str, int]:

@@ -1,11 +1,38 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.agents import BuilderAgent
+from app.builder import BuilderTools
+from app.builder.models import (
+    BuilderAgentResult,
+    BuilderCommandResult,
+    BuilderFileContent,
+    BuilderFileSearchResult,
+    BuilderGrepResult,
+    BuilderPageList,
+    BuilderPatchResult,
+    BuilderPreviewCheckResult,
+    BuilderPreviewResult,
+    BuilderSnapshot,
+    BuilderWorkspaceFindResult,
+    BuilderWorkspaceList,
+    BuilderWriteResult,
+)
 from app.executors.dry_run import DryRunExecutor
 from app.models.schemas import (
     AppChatStreamRequest,
     AppDebugRequest,
     AppDebugResponse,
+    BuilderApplyPatchRequest,
+    BuilderBuildRequest,
+    BuilderCreateWorkspaceRequest,
+    BuilderFindWorkspaceRequest,
+    BuilderGrepFilesRequest,
+    BuilderReadFileRequest,
+    BuilderPreviewCheckRequest,
+    BuilderRunScriptRequest,
+    BuilderSearchFilesRequest,
+    BuilderWriteFileRequest,
     ContextCompactionRequest,
     ContextCompactionResponse,
     RequirementAnalysis,
@@ -22,6 +49,8 @@ from app.services.spec_service import generate_spec_with_speckit
 from app.skills import SkillRegistry
 
 router = APIRouter()
+builder_tools = BuilderTools()
+builder_agent = BuilderAgent(builder_tools)
 
 
 @router.get("/health")
@@ -110,6 +139,126 @@ async def chat_stream(request: AppChatStreamRequest) -> StreamingResponse:
 async def compact_context(request: ContextCompactionRequest) -> ContextCompactionResponse:
     try:
         return await ContextCompactor().compact(request)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 503 if "429" in message or "rate_limit" in message or "Concurrency limit exceeded" in message else 422
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+
+@router.post("/api/builder/workspaces", response_model=BuilderAgentResult)
+def builder_create_workspace(request: BuilderCreateWorkspaceRequest) -> BuilderAgentResult:
+    try:
+        return builder_agent.create_workspace(request.conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/api/builder/workspaces", response_model=BuilderWorkspaceList)
+def builder_list_workspaces(limit: int = 50) -> BuilderWorkspaceList:
+    try:
+        return BuilderWorkspaceList(workspaces=builder_tools.list_workspaces(limit))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/find", response_model=BuilderWorkspaceFindResult)
+def builder_find_workspace(request: BuilderFindWorkspaceRequest) -> BuilderWorkspaceFindResult:
+    try:
+        return BuilderWorkspaceFindResult(matches=builder_tools.find_workspaces(request.query, request.limit))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/api/builder/workspaces/{workspace_id}/snapshot", response_model=BuilderSnapshot)
+def builder_snapshot(workspace_id: str) -> BuilderSnapshot:
+    try:
+        return builder_tools.get_snapshot(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/api/builder/workspaces/{workspace_id}/pages", response_model=BuilderPageList)
+def builder_list_pages(workspace_id: str) -> BuilderPageList:
+    try:
+        return builder_tools.list_pages(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/files/search", response_model=BuilderFileSearchResult)
+def builder_search_files(workspace_id: str, request: BuilderSearchFilesRequest) -> BuilderFileSearchResult:
+    try:
+        return builder_tools.search_files(workspace_id, request.query, request.max_results)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/files/grep", response_model=BuilderGrepResult)
+def builder_grep_files(workspace_id: str, request: BuilderGrepFilesRequest) -> BuilderGrepResult:
+    try:
+        return builder_tools.grep_files(workspace_id, request.query, request.max_results)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/files/read", response_model=BuilderFileContent)
+def builder_read_file(workspace_id: str, request: BuilderReadFileRequest) -> BuilderFileContent:
+    try:
+        return builder_tools.read_file(workspace_id, request.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/files/write", response_model=BuilderWriteResult)
+def builder_write_file(workspace_id: str, request: BuilderWriteFileRequest) -> BuilderWriteResult:
+    try:
+        return builder_tools.write_file(workspace_id, request.path, request.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/patch", response_model=BuilderPatchResult)
+async def builder_apply_patch(
+    workspace_id: str,
+    request: BuilderApplyPatchRequest,
+) -> BuilderPatchResult:
+    try:
+        return await builder_tools.apply_patch(workspace_id, request.patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/build/h5", response_model=BuilderCommandResult)
+async def builder_build_h5(workspace_id: str, request: BuilderBuildRequest) -> BuilderCommandResult:
+    try:
+        return await builder_tools.run_build_h5(workspace_id, request.install)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/scripts/run", response_model=BuilderCommandResult)
+async def builder_run_script(workspace_id: str, request: BuilderRunScriptRequest) -> BuilderCommandResult:
+    try:
+        return await builder_tools.run_script(workspace_id, request.script, request.install)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/preview/h5", response_model=BuilderPreviewResult)
+async def builder_preview_h5(workspace_id: str) -> BuilderPreviewResult:
+    try:
+        return await builder_tools.start_preview_h5(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/builder/workspaces/{workspace_id}/preview/h5/check", response_model=BuilderPreviewCheckResult)
+async def builder_check_preview_h5(
+    workspace_id: str,
+    request: BuilderPreviewCheckRequest | None = None,
+) -> BuilderPreviewCheckResult:
+    try:
+        return await builder_tools.check_preview_h5(workspace_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

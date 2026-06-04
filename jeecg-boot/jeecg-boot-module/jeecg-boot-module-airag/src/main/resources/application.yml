@@ -65,6 +65,8 @@ jeecg:
   ai-orchestrator:
     base-url: http://127.0.0.1:9100
     timeout: 120000
+    stream-read-timeout: 600000
+    compact-timeout: 180000
   ai-rag:
     embed-store:
       host: "localhost"

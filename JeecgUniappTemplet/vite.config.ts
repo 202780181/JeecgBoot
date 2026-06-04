@@ -100,12 +100,12 @@ export default ({ command, mode }) => {
           return html.replace('%BUILD_TIME%', dayjs().format('YYYY-MM-DD HH:mm:ss'))
         },
       },
-      // 打包分析插件，h5 + 生产环境才弹出
+      // 打包分析插件，h5 + 生产环境生成报告，但默认不自动打开浏览器
       UNI_PLATFORM === 'h5' &&
         mode === 'production' &&
         visualizer({
           filename: './node_modules/.cache/visualizer/stats.html',
-          open: true,
+          open: env.VITE_VISUALIZER_OPEN === 'true',
           gzipSize: true,
           brotliSize: true,
         }),

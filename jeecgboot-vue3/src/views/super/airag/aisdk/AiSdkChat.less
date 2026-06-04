@@ -415,6 +415,189 @@
   animation: thinkingTextReveal 2.35s cubic-bezier(0.22, 0.78, 0.2, 1) infinite;
 }
 
+.tool-progress-list {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 10px;
+  padding: 0;
+}
+
+.tool-progress-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+  max-width: 680px;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.tool-progress-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.tool-progress-item .tool-progress-dot {
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.tool-progress-main {
+  min-width: 0;
+}
+
+.tool-progress-title {
+  color: #374151;
+  font-weight: 600;
+}
+
+.tool-progress-detail {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: #6b7280;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-log-list {
+  display: grid;
+  gap: 7px;
+  max-width: 680px;
+  margin: 4px 0 10px;
+}
+
+.operation-log-item {
+  display: inline-grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+  width: fit-content;
+  max-width: 100%;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.operation-log-item .app-iconify {
+  margin-top: 2px;
+  color: #6b7280;
+  font-size: 15px;
+}
+
+.operation-log-item.is-running .app-iconify {
+  color: #2563eb;
+}
+
+.operation-log-content {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.operation-log-text,
+.operation-log-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-log-text {
+  color: #374151;
+}
+
+.operation-log-item.is-running .operation-log-text {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.operation-log-detail {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.file-changes-card {
+  max-width: 680px;
+  margin: 8px 0 2px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.file-changes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fafafa;
+}
+
+.file-changes-header strong {
+  display: block;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.file-changes-header span {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.file-changes-header em,
+.file-changes-item em {
+  color: #16a34a;
+  font-style: normal;
+}
+
+.file-changes-header i,
+.file-changes-item i {
+  color: #dc2626;
+  font-style: normal;
+}
+
+.file-changes-list {
+  display: grid;
+  padding: 8px 12px 9px;
+  gap: 7px;
+}
+
+.file-changes-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.file-changes-item > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-changes-delta {
+  display: inline-flex;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @keyframes thinkingTextReveal {
   0% {
     background-position: 100% center;

@@ -90,6 +90,16 @@ class ContextBuilder:
         packed: list[dict] = []
         used_tokens = 0
 
+        active_task_snapshot = self._active_task_snapshot_message(selection)
+        if active_task_snapshot:
+            used_tokens = self._append_with_truncation(
+                packed,
+                active_task_snapshot,
+                used_tokens,
+                budget,
+                min_chars=800,
+            )
+
         summary = self._summary_message(selection)
         if summary:
             used_tokens = self._append_with_truncation(packed, summary, used_tokens, budget, min_chars=600)
@@ -108,6 +118,16 @@ class ContextBuilder:
         packed_recent = self._pack_recent_messages(recent_messages, max(0, budget - used_tokens))
         packed.extend(packed_recent)
         return packed
+
+    def _active_task_snapshot_message(self, selection: ContextSelection) -> dict | None:
+        lines = []
+        for fragment in selection.active_task_snapshots:
+            text = self._fragment_text(fragment, max_chars=1800)
+            if text:
+                lines.append(text)
+        if not lines:
+            return None
+        return {"role": "system", "content": "当前任务状态（必须优先遵循）：\n" + "\n\n".join(lines)}
 
     def _summary_message(self, selection: ContextSelection) -> dict | None:
         if not selection.summary_text:

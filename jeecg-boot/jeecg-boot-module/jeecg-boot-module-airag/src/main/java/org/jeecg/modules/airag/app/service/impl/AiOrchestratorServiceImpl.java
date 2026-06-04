@@ -15,6 +15,8 @@ import org.jeecg.modules.airag.app.entity.AiSdkMessage;
 import org.jeecg.modules.airag.app.entity.AiragApp;
 import org.jeecg.modules.airag.app.service.IAiOrchestratorService;
 import org.jeecg.modules.airag.app.service.IAiSdkConversationService;
+import org.jeecg.modules.airag.app.service.IAiSdkRunProjectionService;
+import org.jeecg.modules.airag.app.service.IAiSdkRunService;
 import org.jeecg.modules.airag.app.service.IAiragAppService;
 import org.jeecg.modules.airag.app.vo.AppDebugParams;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,11 +32,8 @@ import java.io.PrintWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,7 +41,8 @@ import java.util.concurrent.Executors;
 @Slf4j
 @Service
 public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
-    private static final ExecutorService CONTEXT_POST_PROCESSOR = Executors.newFixedThreadPool(2);
+    private static final ExecutorService CONTEXT_POST_PROCESSOR = Executors.newSingleThreadExecutor();
+    private static final String SSE_EVENT_VERSION = "2026-06-04";
 
     @Autowired
     private IAiragAppService airagAppService;
@@ -52,6 +52,12 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
 
     @Autowired
     private IAiSdkConversationService aiSdkConversationService;
+
+    @Autowired
+    private IAiSdkRunService aiSdkRunService;
+
+    @Autowired
+    private IAiSdkRunProjectionService aiSdkRunProjectionService;
 
     @Override
     public void debug(AppDebugParams request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
@@ -115,22 +121,23 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
     }
 
     private void proxyChatStream(AiragApp app, AppDebugParams request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
-        String requestId = UUID.randomUUID().toString();
+        String runId = "run_" + UUID.randomUUID().toString().replace("-", "");
+        int[] lastSequence = new int[]{0};
         AiSdkConversation conversation = aiSdkConversationService.ensureConversation(app, request, httpRequest);
         AiSdkMessage userMessage = aiSdkConversationService.saveUserMessage(conversation, app, request);
         String conversationId = conversation.getId();
+        aiSdkRunService.createRun(runId, conversationId, userMessage.getId(), buildRunMetadata(app, request));
         Map<String, Object> contextSource = aiSdkConversationService.buildContextSource(conversationId, userMessage.getId(), request.getContent(), httpRequest);
         String topicId = request.getTopicId() == null ? "" : request.getTopicId();
         HttpURLConnection connection = null;
         boolean forwarded = false;
         boolean assistantSaved = false;
         StringBuilder assistantContent = new StringBuilder();
-        AssistantSseMetadataCollector metadataCollector = new AssistantSseMetadataCollector(app, request);
         prepareSseResponse(httpResponse);
         try {
             connection = openConnection("/api/apps/chat/stream");
             try (OutputStream outputStream = connection.getOutputStream()) {
-                outputStream.write(buildChatPayload(app, request, httpRequest, contextSource).toJSONString().getBytes(StandardCharsets.UTF_8));
+                outputStream.write(buildChatPayload(runId, app, request, httpRequest, contextSource).toJSONString().getBytes(StandardCharsets.UTF_8));
             }
 
             int status = connection.getResponseCode();
@@ -144,36 +151,45 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (line.isEmpty()) {
-                        ForwardedEvent forwardedEvent = forwardEvent(writer, event.toString());
+                        ForwardedEvent forwardedEvent = forwardEvent(writer, event.toString(), runId, conversationId);
                         forwarded = forwardedEvent.forwarded || forwarded;
-                        assistantSaved = handleForwardedEvent(forwardedEvent.eventData, assistantContent, assistantSaved, conversationId, app, request, metadataCollector);
+                        lastSequence[0] = Math.max(lastSequence[0], forwardedEvent.sequence);
+                        assistantSaved = handleForwardedEvent(forwardedEvent.eventData, assistantContent, assistantSaved, runId);
                         event.setLength(0);
                     } else {
                         event.append(line).append('\n');
                     }
                 }
-                ForwardedEvent forwardedEvent = forwardEvent(writer, event.toString());
+                ForwardedEvent forwardedEvent = forwardEvent(writer, event.toString(), runId, conversationId);
                 forwarded = forwardedEvent.forwarded || forwarded;
-                assistantSaved = handleForwardedEvent(forwardedEvent.eventData, assistantContent, assistantSaved, conversationId, app, request, metadataCollector);
+                lastSequence[0] = Math.max(lastSequence[0], forwardedEvent.sequence);
+                assistantSaved = handleForwardedEvent(forwardedEvent.eventData, assistantContent, assistantSaved, runId);
             }
             if (!forwarded) {
                 JSONObject message = new JSONObject();
                 message.put("message", "ai-orchestrator 没有返回有效 SSE 事件");
-                sendEvent(writer, buildEvent(requestId, "ERROR", message, conversationId, topicId));
-                metadataCollector.recordGeneratedError(message);
-                aiSdkConversationService.saveAssistantMessage(conversationId, message.getString("message"), "failed", app, request, metadataCollector.toMetadata());
+                JSONObject errorEvent = buildEvent(runId, ++lastSequence[0], "ERROR", message, conversationId, topicId);
+                aiSdkRunService.recordEvent(runId, conversationId, errorEvent);
+                sendEvent(writer, errorEvent);
+                aiSdkRunProjectionService.projectRun(runId);
                 assistantSaved = true;
             }
             if (!assistantSaved && assistantContent.length() > 0) {
-                aiSdkConversationService.saveAssistantMessage(conversationId, assistantContent.toString(), "completed", app, request, metadataCollector.toMetadata());
+                aiSdkRunProjectionService.projectRun(runId);
             }
             runContextPostProcessing(app, request, conversationId, userMessage.getId(), httpRequest);
         } catch (Exception e) {
             if (isClientAbortException(e)) {
                 log.info("AI SDK SSE 客户端已停止响应，conversationId={}", conversationId);
+                JSONObject message = new JSONObject();
+                message.put("message", "客户端停止响应");
+                JSONObject cancelEvent = buildEvent(runId, ++lastSequence[0], "CANCELLED", message, conversationId, topicId);
+                aiSdkRunService.recordEvent(runId, conversationId, cancelEvent);
                 if (assistantContent.length() > 0) {
-                    aiSdkConversationService.saveAssistantMessage(conversationId, assistantContent.toString(), "completed", app, request, metadataCollector.toMetadata());
+                    aiSdkRunProjectionService.projectRun(runId);
                     runContextPostProcessing(app, request, conversationId, userMessage.getId(), httpRequest);
+                } else {
+                    aiSdkRunProjectionService.projectRun(runId);
                 }
                 return;
             }
@@ -181,10 +197,10 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
             try {
                 JSONObject message = new JSONObject();
                 message.put("message", "ai-orchestrator 调用失败：" + e.getMessage());
-                sendEvent(httpResponse.getWriter(), buildEvent(requestId, "ERROR", message, conversationId, topicId));
-                String failedContent = assistantContent.length() > 0 ? assistantContent.toString() : message.getString("message");
-                metadataCollector.recordGeneratedError(message);
-                aiSdkConversationService.saveAssistantMessage(conversationId, failedContent, "failed", app, request, metadataCollector.toMetadata());
+                JSONObject errorEvent = buildEvent(runId, ++lastSequence[0], "ERROR", message, conversationId, topicId);
+                aiSdkRunService.recordEvent(runId, conversationId, errorEvent);
+                sendEvent(httpResponse.getWriter(), errorEvent);
+                aiSdkRunProjectionService.projectRun(runId);
             } catch (IOException ignored) {
             }
         } finally {
@@ -289,7 +305,7 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
         connection.setConnectTimeout(properties.getTimeout());
-        connection.setReadTimeout(properties.getTimeout());
+        connection.setReadTimeout(properties.getStreamReadTimeout());
         connection.setRequestProperty("Content-Type", MediaType.APPLICATION_JSON_VALUE);
         connection.setRequestProperty("Accept", MediaType.TEXT_EVENT_STREAM_VALUE);
         return connection;
@@ -301,7 +317,7 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
         connection.setConnectTimeout(properties.getTimeout());
-        connection.setReadTimeout(properties.getTimeout());
+        connection.setReadTimeout(properties.getCompactTimeout());
         connection.setRequestProperty("Content-Type", MediaType.APPLICATION_JSON_VALUE);
         connection.setRequestProperty("Accept", MediaType.APPLICATION_JSON_VALUE);
         return connection;
@@ -317,9 +333,10 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         return connection;
     }
 
-    private JSONObject buildChatPayload(AiragApp app, AppDebugParams request, HttpServletRequest httpRequest, Map<String, Object> contextSource) {
+    private JSONObject buildChatPayload(String runId, AiragApp app, AppDebugParams request, HttpServletRequest httpRequest, Map<String, Object> contextSource) {
         JSONObject payload = new JSONObject();
         payload.put("app", buildAppPayload(app));
+        payload.put("runId", runId);
         payload.put("input", request.getContent());
         payload.put("conversation_id", request.getConversationId());
         payload.put("topic_id", request.getTopicId());
@@ -331,26 +348,30 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
         return payload;
     }
 
-    private ForwardedEvent forwardEvent(PrintWriter writer, String rawEvent) {
+    private ForwardedEvent forwardEvent(PrintWriter writer, String rawEvent, String runId, String conversationId) {
         if (rawEvent == null || rawEvent.trim().isEmpty()) {
-            return new ForwardedEvent(false, null);
+            return new ForwardedEvent(false, null, 0);
         }
         for (String line : rawEvent.split("\\n")) {
             if (line.startsWith("data:") && !line.substring(5).trim().isEmpty()) {
+                JSONObject eventData = parseEventData(line.substring(5).trim(), runId, conversationId);
+                if (eventData == null) {
+                    return new ForwardedEvent(false, null, 0);
+                }
+                aiSdkRunService.recordEvent(runId, conversationId, eventData);
                 writer.write(rawEvent);
                 writer.write("\n");
                 writer.flush();
-                return new ForwardedEvent(true, parseEventData(line.substring(5).trim()));
+                return new ForwardedEvent(true, eventData, eventData.getIntValue("sequence"));
             }
         }
-        return new ForwardedEvent(false, null);
+        return new ForwardedEvent(false, null, 0);
     }
 
-    private boolean handleForwardedEvent(JSONObject eventData, StringBuilder assistantContent, boolean assistantSaved, String conversationId, AiragApp app, AppDebugParams request, AssistantSseMetadataCollector metadataCollector) {
+    private boolean handleForwardedEvent(JSONObject eventData, StringBuilder assistantContent, boolean assistantSaved, String runId) {
         if (eventData == null || assistantSaved) {
             return assistantSaved;
         }
-        metadataCollector.record(eventData);
         String event = eventData.getString("event");
         if ("MESSAGE".equals(event)) {
             JSONObject data = eventData.getJSONObject("data");
@@ -361,144 +382,81 @@ public class AiOrchestratorServiceImpl implements IAiOrchestratorService {
             return false;
         }
         if ("MESSAGE_END".equals(event)) {
-            aiSdkConversationService.saveAssistantMessage(conversationId, assistantContent.toString(), "completed", app, request, metadataCollector.toMetadata());
+            aiSdkRunProjectionService.projectRun(runId);
             return true;
         }
         if ("ERROR".equals(event)) {
-            JSONObject data = eventData.getJSONObject("data");
-            String message = data == null ? null : data.getString("message");
-            String content = assistantContent.length() > 0 ? assistantContent.toString() : message;
-            aiSdkConversationService.saveAssistantMessage(conversationId, content, "failed", app, request, metadataCollector.toMetadata());
+            aiSdkRunProjectionService.projectRun(runId);
+            return true;
+        }
+        if ("CANCELLED".equals(event)) {
+            aiSdkRunProjectionService.projectRun(runId);
             return true;
         }
         return false;
     }
 
-    private JSONObject parseEventData(String data) {
+    private JSONObject parseEventData(String data, String runId, String conversationId) {
         try {
-            return JSONObject.parseObject(data);
+            JSONObject eventData = JSONObject.parseObject(data);
+            if (!isValidEnvelope(eventData, runId, conversationId)) {
+                log.warn("ai-orchestrator SSE 事件缺少标准 envelope: {}", data);
+                return null;
+            }
+            return eventData;
         } catch (Exception e) {
             log.warn("解析 ai-orchestrator SSE 事件失败: {}", data, e);
             return null;
         }
     }
 
+    private boolean isValidEnvelope(JSONObject eventData, String runId, String conversationId) {
+        return eventData != null
+                && SSE_EVENT_VERSION.equals(eventData.getString("version"))
+                && runId.equals(eventData.getString("runId"))
+                && eventData.getInteger("sequence") != null
+                && eventData.getString("event") != null
+                && eventData.getString("phase") != null
+                && eventData.getString("status") != null
+                && eventData.getLong("timestamp") != null
+                && conversationId.equals(eventData.getString("conversationId"));
+    }
+
+    private Map<String, Object> buildRunMetadata(AiragApp app, AppDebugParams request) {
+        JSONObject metadata = new JSONObject();
+        metadata.put("appId", app.getId());
+        metadata.put("appName", app.getName());
+        metadata.put("modelId", app.getModelId());
+        metadata.put("input", request.getContent());
+        metadata.put("topicId", request.getTopicId());
+        metadata.put("sessionType", request.getSessionType());
+        metadata.put("skillIds", request.getSkillIds());
+        metadata.put("enableSearch", Boolean.TRUE.equals(request.getEnableSearch()));
+        metadata.put("attachments", request.getAttachments());
+        return metadata;
+    }
+
     private static class ForwardedEvent {
         private final boolean forwarded;
         private final JSONObject eventData;
+        private final int sequence;
 
-        private ForwardedEvent(boolean forwarded, JSONObject eventData) {
+        private ForwardedEvent(boolean forwarded, JSONObject eventData, int sequence) {
             this.forwarded = forwarded;
             this.eventData = eventData;
+            this.sequence = sequence;
         }
     }
 
-    private static class AssistantSseMetadataCollector {
-        private final List<JSONObject> toolCalls = new ArrayList<>();
-        private final List<JSONObject> toolResults = new ArrayList<>();
-        private final List<JSONObject> sources = new ArrayList<>();
-        private final List<JSONObject> skillEvents = new ArrayList<>();
-        private final List<JSONObject> contextEvents = new ArrayList<>();
-        private final List<JSONObject> errors = new ArrayList<>();
-        private final Set<String> sourceKeys = new HashSet<>();
-        private final JSONObject model = new JSONObject();
-        private final JSONObject params = new JSONObject();
-        private final List<Map<String, Object>> attachments;
-
-        private AssistantSseMetadataCollector(AiragApp app, AppDebugParams request) {
-            this.attachments = request.getAttachments();
-            model.put("appId", app.getId());
-            model.put("appName", app.getName());
-            model.put("appType", app.getType());
-            model.put("modelId", app.getModelId());
-            params.put("topicId", request.getTopicId());
-            params.put("sessionType", request.getSessionType());
-            params.put("enableSearch", Boolean.TRUE.equals(request.getEnableSearch()));
-            params.put("skillIds", request.getSkillIds());
-        }
-
-        private void record(JSONObject eventData) {
-            String event = eventData.getString("event");
-            JSONObject data = eventData.getJSONObject("data");
-            if ("TOOL_CALL".equals(event)) {
-                addEventPayload(toolCalls, eventData, data);
-                return;
-            }
-            if ("TOOL_RESULT".equals(event)) {
-                addEventPayload(toolResults, eventData, data);
-                collectSources(data);
-                return;
-            }
-            if ("SKILL_SELECTED".equals(event) || "SPEC_EVENT".equals(event)) {
-                addEventPayload(skillEvents, eventData, data);
-                return;
-            }
-            if ("CONTEXT_SELECTED".equals(event)) {
-                addEventPayload(contextEvents, eventData, data);
-                return;
-            }
-            if ("ERROR".equals(event)) {
-                addEventPayload(errors, eventData, data);
-            }
-        }
-
-        private void recordGeneratedError(JSONObject data) {
-            JSONObject event = new JSONObject();
-            event.put("event", "ERROR");
-            event.put("data", data);
-            addEventPayload(errors, event, data);
-        }
-
-        private Map<String, Object> toMetadata() {
-            JSONObject metadata = new JSONObject();
-            metadata.put("toolCalls", toolCalls);
-            metadata.put("toolResults", toolResults);
-            metadata.put("sources", sources);
-            metadata.put("skillEvents", skillEvents);
-            metadata.put("contextEvents", contextEvents);
-            metadata.put("attachments", attachments == null ? new ArrayList<>() : attachments);
-            metadata.put("model", model);
-            metadata.put("params", params);
-            if (!errors.isEmpty()) {
-                metadata.put("errors", errors);
-            }
-            return metadata;
-        }
-
-        private void addEventPayload(List<JSONObject> target, JSONObject eventData, JSONObject data) {
-            JSONObject payload = data == null ? new JSONObject() : new JSONObject(data);
-            payload.put("event", eventData.getString("event"));
-            payload.put("requestId", eventData.getString("requestId"));
-            payload.put("conversationId", eventData.getString("conversationId"));
-            payload.put("topicId", eventData.getString("topicId"));
-            target.add(payload);
-        }
-
-        private void collectSources(JSONObject data) {
-            if (data == null || !"web_search".equals(data.getString("toolName"))) {
-                return;
-            }
-            JSONObject result = data.getJSONObject("result");
-            if (result == null || result.getJSONArray("results") == null) {
-                return;
-            }
-            for (Object item : result.getJSONArray("results")) {
-                if (!(item instanceof JSONObject source)) {
-                    continue;
-                }
-                String url = source.getString("url");
-                String key = url == null || url.isEmpty() ? source.toJSONString() : url;
-                if (sourceKeys.add(key)) {
-                    sources.add(source);
-                }
-            }
-        }
-    }
-
-    private JSONObject buildEvent(String requestId, String event, JSONObject data, String conversationId, String topicId) {
+    private JSONObject buildEvent(String runId, int sequence, String event, JSONObject data, String conversationId, String topicId) {
         JSONObject eventData = new JSONObject();
-        eventData.put("requestId", requestId);
+        eventData.put("version", SSE_EVENT_VERSION);
+        eventData.put("runId", runId);
+        eventData.put("sequence", sequence);
         eventData.put("event", event);
+        eventData.put("phase", "CANCELLED".equals(event) ? "finalize" : "error");
+        eventData.put("status", "CANCELLED".equals(event) ? "cancelled" : "failed");
+        eventData.put("timestamp", System.currentTimeMillis());
         eventData.put("data", data);
         eventData.put("conversationId", conversationId);
         eventData.put("topicId", topicId);

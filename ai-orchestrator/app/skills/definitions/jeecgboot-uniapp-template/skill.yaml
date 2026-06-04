@@ -5,10 +5,24 @@ instruction_file: instructions.md
 category: 移动端
 selection_mode: single
 available_tool_names:
-  - weather
+  - builder_create_workspace
+  - builder_list_workspaces
+  - builder_find_workspace
+  - builder_get_snapshot
+  - builder_list_pages
+  - builder_search_files
+  - builder_grep_files
+  - builder_read_file
+  - builder_write_file
+  - builder_apply_patch
+  - builder_build_h5
+  - builder_run_script
+  - builder_start_preview_h5
+  - builder_check_preview_h5
 default_tool_names: []
 forbidden_tool_names:
   - weather
+max_tool_rounds: 32
 spec_kit:
   enabled: true
   mode: template

@@ -4,13 +4,18 @@ from io import BytesIO
 import json
 from json import JSONDecodeError
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
 
-from app.models.events import StreamEventType, stream_event
+from app.core.config import settings
+from app.models.event_display import operation_display
+from app.models.events import StreamEventType, StreamEventWriter
 from app.models.schemas import AppChatStreamRequest, ModelConfig
+from app.services.agent_loop import BuilderAgentLoop
+from app.services.agent_preflight import AgentIntentClassification, AgentPreflight, AgentPreflightResult, PreflightIntent
 from app.services.context_builder import ContextBuilder
 from app.services.jeecg_client import JeecgClient
 from app.services.spec_service import SpecKitResult, generate_spec_with_speckit
@@ -53,24 +58,24 @@ class ChatService:
         tool_registry: ToolRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         context_builder: ContextBuilder | None = None,
+        agent_preflight: AgentPreflight | None = None,
         spec_generator=generate_spec_with_speckit,
     ) -> None:
         self.jeecg_client = jeecg_client or JeecgClient()
         self.tool_registry = tool_registry or ToolRegistry()
         self.skill_registry = skill_registry or SkillRegistry()
         self.context_builder = context_builder or ContextBuilder()
+        self.agent_preflight = agent_preflight or AgentPreflight()
         self.spec_generator = spec_generator
 
     async def stream(self, request: AppChatStreamRequest) -> AsyncIterator[str]:
-        request_id = str(uuid4())
+        run_id = request.run_id
         conversation_id = request.conversation_id or "debug"
         topic_id = request.topic_id or ""
-        yield stream_event(
-            request_id,
-            StreamEventType.INIT_REQUEST_ID,
-            None,
-            conversation_id,
-            topic_id,
+        event_writer = StreamEventWriter(run_id=run_id, conversation_id=conversation_id, topic_id=topic_id)
+        yield event_writer.event(
+            StreamEventType.RUN_STARTED,
+            {"runId": run_id},
         )
         try:
             selected_skills = self._resolve_and_validate_skills(request.skill_ids)
@@ -78,9 +83,36 @@ class ChatService:
                 request.app.model_id,
                 request.user_context,
             )
+            available_tool_names = self._available_tool_names(request.skill_ids, request.enable_search, request)
+            classification = await self._classify_agent_intent(model, request)
+            preflight = self.agent_preflight.analyze(request, available_tool_names, classification)
+            setattr(request, "_allowed_tool_names", preflight.allowed_tools)
+            yield event_writer.event(
+                StreamEventType.PREFLIGHT,
+                {
+                    **preflight.to_event_data(),
+                    "title": "正在理解需求",
+                    "summary": preflight.operation_note or preflight.summary,
+                    "display": operation_display(
+                        preflight.operation_note or preflight.summary or "正在理解需求并检查操作安全",
+                        detail="；".join(preflight.proposed_steps[:3]),
+                        icon="search",
+                        status="error" if preflight.blocked or preflight.requires_confirmation else "done",
+                    ),
+                },
+            )
+            if preflight.blocked or preflight.needs_clarification or preflight.requires_confirmation:
+                yield event_writer.event(
+                    StreamEventType.MESSAGE,
+                    {"message": self._preflight_stop_message(preflight)},
+                )
+                yield event_writer.event(
+                    StreamEventType.MESSAGE_END,
+                    None,
+                )
+                return
             for skill in selected_skills:
-                yield stream_event(
-                    request_id,
+                yield event_writer.event(
                     StreamEventType.SKILL_SELECTED,
                     {
                         "skillId": skill.id,
@@ -91,15 +123,14 @@ class ChatService:
                         "availableToolNames": skill.available_tool_names,
                         "defaultToolNames": skill.default_tool_names,
                         "forbiddenToolNames": skill.forbidden_tool_names,
+                        "title": f"正在执行 Skill：{skill.name}",
+                        "summary": skill.description,
+                        "display": operation_display(f"正在执行 Skill：{skill.name}", detail=skill.description, icon="search", status="running"),
                     },
-                    conversation_id,
-                    topic_id,
                 )
                 if skill.spec_kit.enabled:
                     async for event in self._run_skill_spec_kit(
-                        request_id,
-                        conversation_id,
-                        topic_id,
+                        event_writer,
                         skill,
                         request.input,
                     ):
@@ -109,101 +140,57 @@ class ChatService:
             context_selection = context_metadata.get("contextSelection")
             attachment_selection = context_metadata.get("attachmentSelection")
             if self._should_emit_context_selection(context_selection):
-                yield stream_event(
-                    request_id,
+                yield event_writer.event(
                     StreamEventType.CONTEXT_SELECTED,
                     {
                         "contextSelection": context_selection,
                         "attachmentSelection": attachment_selection,
+                        "title": "已选择上下文",
+                        "summary": "已完成上下文预算与片段选择",
+                        "display": operation_display("已选择上下文", detail="已完成上下文预算与片段选择", icon="search", status="done"),
                     },
-                    conversation_id,
-                    topic_id,
                 )
-            async for item in self._stream_complete(model, request, messages, use_tools=True):
-                if isinstance(item, str):
-                    yield stream_event(
-                        request_id,
-                        StreamEventType.MESSAGE,
-                        {"message": item},
-                        conversation_id,
-                        topic_id,
-                    )
-                    continue
+            agent_loop = BuilderAgentLoop(
+                tool_resolver=self._resolve_tool_call,
+                tool_call_id=self._tool_call_id,
+                assistant_tool_call_message=self._assistant_tool_call_message,
+                tool_result_message=self._tool_result_message,
+                stream_complete=self._stream_complete,
+                max_repair_attempts=self._max_repair_attempts(model),
+                allowed_tool_names=preflight.allowed_tools,
+            )
+            async for event in agent_loop.run(
+                model=model,
+                request=request,
+                messages=messages,
+                event_writer=event_writer,
+                max_tool_rounds=self._max_tool_rounds(model, selected_skills),
+            ):
+                yield event
 
-                tool_call = item
-                tool, tool_input = self._resolve_tool_call(tool_call)
-                tool_call_id = self._tool_call_id(tool_call)
-                tool_call["id"] = tool_call_id
-                yield stream_event(
-                    request_id,
-                    StreamEventType.TOOL_CALL,
-                    {
-                        "toolName": tool.spec.name,
-                        "title": tool.call_title(tool_input),
-                        "input": tool_input,
-                        "toolCallId": tool_call_id,
-                    },
-                    conversation_id,
-                    topic_id,
-                )
-                tool_result = await tool.run(tool_input)
-                yield stream_event(
-                    request_id,
-                    StreamEventType.TOOL_RESULT,
-                    {
-                        **tool_result.model_dump(by_alias=True),
-                        "title": tool.call_title(tool_input),
-                        "toolCallId": tool_call_id,
-                    },
-                    conversation_id,
-                    topic_id,
-                )
-                messages.extend(
-                    [
-                        self._assistant_tool_call_message(tool_call),
-                        self._tool_result_message(tool_call_id, tool_result),
-                    ]
-                )
-                async for chunk in self._stream_complete(model, request, messages, use_tools=False):
-                    if isinstance(chunk, str):
-                        yield stream_event(
-                            request_id,
-                            StreamEventType.MESSAGE,
-                            {"message": chunk},
-                            conversation_id,
-                            topic_id,
-                        )
-                yield stream_event(
-                    request_id,
-                    StreamEventType.MESSAGE_END,
-                    None,
-                    conversation_id,
-                    topic_id,
-                )
-                return
-
-            yield stream_event(
-                request_id,
+            yield event_writer.event(
                 StreamEventType.MESSAGE_END,
                 None,
-                conversation_id,
-                topic_id,
             )
         except SkillValidationError as exc:
-            yield stream_event(
-                request_id,
+            error_data = exc.to_event_data()
+            error_data["title"] = "执行失败"
+            error_data["summary"] = str(exc)
+            error_data["display"] = operation_display("执行失败", detail=str(exc), icon="search", status="error")
+            yield event_writer.event(
                 StreamEventType.ERROR,
-                exc.to_event_data(),
-                conversation_id,
-                topic_id,
+                error_data,
             )
         except Exception as exc:
-            yield stream_event(
-                request_id,
+            message = f"AI 对话失败：{exc}"
+            yield event_writer.event(
                 StreamEventType.ERROR,
-                {"message": f"AI 对话失败：{exc}"},
-                conversation_id,
-                topic_id,
+                {
+                    "message": message,
+                    "title": "执行失败",
+                    "summary": message,
+                    "display": operation_display("执行失败", detail=message, icon="search", status="error"),
+                },
             )
 
     async def _stream_complete(
@@ -303,18 +290,156 @@ class ChatService:
             or int((context_selection.get("attachmentSelection") or {}).get("candidateCount") or 0) > 0
         )
 
+    def _preflight_stop_message(self, preflight: AgentPreflightResult) -> str:
+        if preflight.blocked:
+            return (
+                f"{preflight.operation_note}\n\n"
+                f"原因：{preflight.block_reason}\n\n"
+                "请调整为受控仓库路径或提供非敏感信息后再继续。"
+            )
+        if preflight.needs_clarification:
+            return preflight.clarification_question or "我需要你补充关键需求后再继续。"
+        if preflight.requires_confirmation:
+            notes = "\n".join(f"- {note}" for note in preflight.safety_notes)
+            return (
+                f"{preflight.operation_note}\n\n"
+                f"{notes}\n\n"
+                "请明确回复确认后，我再继续执行写入、删除、数据库或命令相关操作。"
+            )
+        return preflight.operation_note
+
+    async def _classify_agent_intent(
+        self,
+        model: ModelConfig,
+        request: AppChatStreamRequest,
+    ) -> AgentIntentClassification | None:
+        if not model.credential.api_key:
+            return None
+        prompt = self._preflight_classifier_prompt(request)
+        payload, endpoint, headers, timeout = self._build_raw_model_request(
+            model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 AgentPreflight 意图分类器，只输出 JSON。"
+                        "不要执行用户请求，不要输出解释。"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            stream=False,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=min(float(timeout), 20.0)) as client:
+                response = await client.post(endpoint, json=payload, headers=headers)
+            self._raise_for_bad_model_response(response, endpoint)
+            text = self._extract_completion_text(self._parse_model_response(response, endpoint), endpoint)
+            return self._parse_intent_classification(text)
+        except Exception:
+            return None
+
+    def _preflight_classifier_prompt(self, request: AppChatStreamRequest) -> str:
+        context = {
+            "input": request.input,
+            "skillIds": request.skill_ids,
+            "enableSearch": request.enable_search,
+            "attachments": [
+                {
+                    "id": attachment.id,
+                    "name": attachment.name,
+                    "type": attachment.type,
+                    "path": attachment.path,
+                    "url": attachment.url,
+                }
+                for attachment in request.attachments[:5]
+            ],
+            "activeTaskSnapshots": [
+                {
+                    "type": fragment.type,
+                    "text": (fragment.text or "")[:1200],
+                    "metadata": fragment.metadata,
+                }
+                for fragment in request.context_source.active_task_snapshots[:3]
+            ],
+            "recentMessages": [
+                {"role": message.role, "content": (message.content or "")[:800]}
+                for message in request.context_source.recent_messages[-4:]
+            ],
+        }
+        return (
+            "请根据输入和上下文判断用户意图。只输出 JSON，字段如下：\n"
+            "{"
+            "\"intent\":\"question|read_files|code_change|create_app|api_change|run_command|delete_data|database_change|unknown\","
+            "\"confidence\":0.0,"
+            "\"needsClarification\":false,"
+            "\"clarificationQuestion\":\"\","
+            "\"summary\":\"\","
+            "\"operationNote\":\"\","
+            "\"proposedSteps\":[\"\"],"
+            "\"verificationSteps\":[\"\"]"
+            "}\n"
+            "分类原则：普通代码/页面/接口修改是 code_change 或 api_change；创建新 Builder 工作区或应用是 create_app；"
+            "只查看文件是 read_files；纯问答是 question；数据库删除/清空是 delete_data 或 database_change。\n"
+            f"输入上下文：{json.dumps(context, ensure_ascii=False)}"
+        )
+
+    def _parse_intent_classification(self, text: str) -> AgentIntentClassification | None:
+        body = self._extract_json_object(text)
+        if not body:
+            return None
+        intent = self._parse_preflight_intent(body.get("intent"))
+        return AgentIntentClassification(
+            intent=intent,
+            confidence=self._float_value(body.get("confidence")),
+            needs_clarification=bool(body.get("needsClarification") or body.get("needs_clarification")),
+            clarification_question=str(body.get("clarificationQuestion") or body.get("clarification_question") or ""),
+            summary=str(body.get("summary") or ""),
+            operation_note=str(body.get("operationNote") or body.get("operation_note") or ""),
+            proposed_steps=self._string_list(body.get("proposedSteps") or body.get("proposed_steps")),
+            verification_steps=self._string_list(body.get("verificationSteps") or body.get("verification_steps")),
+        )
+
+    def _extract_json_object(self, text: str) -> dict | None:
+        value = (text or "").strip()
+        if value.startswith("```"):
+            value = re.sub(r"^```(?:json)?\s*", "", value)
+            value = re.sub(r"\s*```$", "", value)
+        start = value.find("{")
+        end = value.rfind("}")
+        if start < 0 or end < start:
+            return None
+        try:
+            body = json.loads(value[start : end + 1])
+        except JSONDecodeError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _parse_preflight_intent(self, value: object) -> PreflightIntent:
+        try:
+            return PreflightIntent(str(value or "unknown"))
+        except ValueError:
+            return PreflightIntent.UNKNOWN
+
+    def _float_value(self, value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _string_list(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item).strip()][:8]
+
     async def _run_skill_spec_kit(
         self,
-        request_id: str,
-        conversation_id: str,
-        topic_id: str,
+        event_writer: StreamEventWriter,
         skill: SkillSpec,
         requirement: str,
     ) -> AsyncIterator[str]:
         yield self._spec_event(
-            request_id,
-            conversation_id,
-            topic_id,
+            event_writer,
             skill,
             stage="start",
             status="running",
@@ -324,9 +449,7 @@ class ChatService:
             result = self.spec_generator(requirement)
         except Exception as exc:
             yield self._spec_event(
-                request_id,
-                conversation_id,
-                topic_id,
+                event_writer,
                 skill,
                 stage="failed",
                 status="failed",
@@ -340,9 +463,7 @@ class ChatService:
             ("tasks", "Tasks 已生成", result.tasks_path),
         ):
             yield self._spec_event(
-                request_id,
-                conversation_id,
-                topic_id,
+                event_writer,
                 skill,
                 stage=stage,
                 status="completed",
@@ -354,9 +475,7 @@ class ChatService:
                 },
             )
         yield self._spec_event(
-            request_id,
-            conversation_id,
-            topic_id,
+            event_writer,
             skill,
             stage="completed",
             status="completed",
@@ -366,9 +485,7 @@ class ChatService:
 
     def _spec_event(
         self,
-        request_id: str,
-        conversation_id: str,
-        topic_id: str,
+        event_writer: StreamEventWriter,
         skill: SkillSpec,
         *,
         stage: str,
@@ -385,6 +502,9 @@ class ChatService:
             "skillName": skill.name,
             "template": skill.spec_kit.template,
             "mode": skill.spec_kit.mode,
+            "title": message,
+            "summary": skill.name,
+            "display": operation_display(message, detail=skill.name, icon="search", status="running" if status == "running" else "done" if status == "completed" else "error"),
         }
         if artifact:
             data["artifact"] = artifact
@@ -398,12 +518,9 @@ class ChatService:
                 "tasksPath": result.tasks_path,
                 "taskCount": len(result.tasks),
             }
-        return stream_event(
-            request_id,
+        return event_writer.event(
             StreamEventType.SPEC_EVENT,
             data,
-            conversation_id,
-            topic_id,
         )
 
     async def _initial_messages(self, request: AppChatStreamRequest, model: ModelConfig | None = None) -> list[dict]:
@@ -684,11 +801,24 @@ class ChatService:
                 tool_names=missing_tool_names,
             )
 
-    def _available_tool_names(self, skill_ids: list[str] | None, enable_search: bool = False) -> list[str] | None:
+    def _available_tool_names(
+        self,
+        skill_ids: list[str] | None,
+        enable_search: bool = False,
+        request: AppChatStreamRequest | None = None,
+    ) -> list[str] | None:
         skills = self.skill_registry.resolve(skill_ids)
         if not skills:
+            if request and (self._should_enable_builder_tools(request) or self._looks_like_builder_request(request)):
+                tool_names = self._builder_tool_names()
+                if enable_search:
+                    tool_names.append("web_search")
+                return tool_names
             if enable_search:
-                return [tool.spec.name for tool in self.tool_registry.list_tools()]
+                tool_names = self._non_search_tool_names()
+                if "web_search" not in tool_names:
+                    tool_names.append("web_search")
+                return tool_names
             return self._non_search_tool_names()
         tool_names: list[str] | None = None
         forbidden_names: set[str] = set()
@@ -714,7 +844,140 @@ class ChatService:
         return [name for name in tool_names if name not in forbidden_names]
 
     def _non_search_tool_names(self) -> list[str]:
-        return [tool.spec.name for tool in self.tool_registry.list_tools() if tool.spec.name != "web_search"]
+        return [
+            tool.spec.name
+            for tool in self.tool_registry.list_tools()
+            if tool.spec.name != "web_search" and not tool.spec.name.startswith("builder_")
+        ]
+
+    def _builder_tool_names(self) -> list[str]:
+        return [
+            tool.spec.name
+            for tool in self.tool_registry.list_tools()
+            if tool.spec.name.startswith("builder_")
+        ]
+
+    def _should_enable_builder_tools(self, request: AppChatStreamRequest) -> bool:
+        for text in self._builder_context_texts(request):
+            if "ai-builder-workspaces" in text:
+                return True
+            for workspace_id in self._workspace_id_candidates(text):
+                if self._builder_workspace_exists(workspace_id):
+                    return True
+        for fragment in [
+            *request.context_source.active_task_snapshots,
+            *request.context_source.relevant_fragments,
+            *request.context_source.attachment_matches,
+            *request.context_source.attachment_candidates,
+            *request.context_source.attachment_summaries,
+        ]:
+            metadata = fragment.metadata or {}
+            workspace_id = metadata.get("workspaceId")
+            if isinstance(workspace_id, str) and self._builder_workspace_exists(workspace_id):
+                return True
+            if fragment.type in {"workspace_snapshot", "file_change", "build_result", "preview_url"}:
+                return True
+            for workspace_id in self._workspace_id_candidates(fragment.text or ""):
+                if self._builder_workspace_exists(workspace_id):
+                    return True
+        return False
+
+    def _looks_like_builder_request(self, request: AppChatStreamRequest) -> bool:
+        text = (request.input or "").lower()
+        keywords = (
+            "修改",
+            "新增",
+            "写入",
+            "重构",
+            "实现",
+            "修复",
+            "改代码",
+            "补充",
+            "接入",
+            "创建项目",
+            "生成项目",
+            "开发一个项目",
+            "小程序",
+            "h5",
+            "uniapp",
+            "页面",
+            "接口",
+        )
+        return any(keyword.lower() in text for keyword in keywords)
+
+    def _builder_context_texts(self, request: AppChatStreamRequest) -> list[str]:
+        texts = [request.input or "", request.context_source.summary.text or ""]
+        summary_metadata = request.context_source.summary.metadata or {}
+        texts.extend(self._string_values(summary_metadata, max_depth=4))
+        for fragment in request.context_source.active_task_snapshots:
+            texts.append(fragment.text or "")
+            texts.extend(self._string_values(fragment.metadata or {}, max_depth=4))
+        for message in [*request.context_source.recent_messages, *request.context_source.relevant_messages]:
+            texts.append(message.content or "")
+            texts.extend(self._string_values(message.metadata or {}, max_depth=3))
+        for message in request.messages:
+            texts.append(message.content or "")
+        return [text for text in texts if text]
+
+    def _string_values(self, value: object, max_depth: int, depth: int = 0) -> list[str]:
+        if depth > max_depth or value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            texts: list[str] = []
+            for item in value.values():
+                texts.extend(self._string_values(item, max_depth=max_depth, depth=depth + 1))
+            return texts
+        if isinstance(value, list):
+            texts: list[str] = []
+            for item in value:
+                texts.extend(self._string_values(item, max_depth=max_depth, depth=depth + 1))
+            return texts
+        return []
+
+    def _workspace_id_candidates(self, text: str) -> list[str]:
+        return [
+            token
+            for token in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]{7,}", text or "")
+            if "-" in token
+        ]
+
+    def _builder_workspace_exists(self, workspace_id: str) -> bool:
+        try:
+            from app.builder import BuilderTools
+
+            BuilderTools().workspace_manager.get_workspace_path(workspace_id)
+            return True
+        except Exception:
+            return False
+
+    def _max_tool_rounds(self, model: ModelConfig, skills: list[SkillSpec]) -> int:
+        params = model.model_params or {}
+        for key in ("maxToolRounds", "max_tool_rounds", "toolRoundsLimit"):
+            value = params.get(key)
+            if value is None:
+                continue
+            try:
+                return max(1, min(int(value), 128))
+            except (TypeError, ValueError):
+                continue
+        skill_limits = [skill.max_tool_rounds for skill in skills if skill.max_tool_rounds]
+        if skill_limits:
+            return max(1, min(max(skill_limits), 128))
+        return max(1, min(settings.max_tool_rounds, 128))
+
+    def _max_repair_attempts(self, model: ModelConfig) -> int:
+        params = model.model_params or {}
+        for key in ("maxRepairAttempts", "max_repair_attempts", "builderRepairAttempts"):
+            value = params.get(key)
+            if value is None:
+                continue
+            try:
+                return max(1, min(int(value), 8))
+            except (TypeError, ValueError):
+                continue
+        return 3
 
     def _dedupe_names(self, names: list[str]) -> list[str]:
         result: list[str] = []
@@ -730,7 +993,7 @@ class ChatService:
         stream: bool,
         messages: list[dict],
         use_tools: bool,
-    ) -> tuple[dict, str, dict, int | float]:
+        ) -> tuple[dict, str, dict, int | float]:
         if not model.base_url:
             raise ValueError("模型 API 域名不能为空")
         if not model.model_name:
@@ -746,14 +1009,41 @@ class ChatService:
             "stream": stream,
         }
         if use_tools:
-            tools = self.tool_registry.openai_tools(
-                self._available_tool_names(request.skill_ids, request.enable_search)
-            )
+            allowed_tool_names = getattr(request, "_allowed_tool_names", None)
+            tool_names = allowed_tool_names if allowed_tool_names is not None else self._available_tool_names(request.skill_ids, request.enable_search, request)
+            tools = self.tool_registry.openai_tools(tool_names)
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
         self._merge_generation_params(payload, model.model_params)
         payload["stream"] = stream
+        headers = {
+            "Authorization": f"Bearer {model.credential.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
+        }
+        return payload, endpoint, headers, model.model_params.get("timeout") or 120
+
+    def _build_raw_model_request(
+        self,
+        model: ModelConfig,
+        *,
+        messages: list[dict],
+        stream: bool,
+    ) -> tuple[dict, str, dict, int | float]:
+        if not model.base_url:
+            raise ValueError("模型 API 域名不能为空")
+        if not model.model_name:
+            raise ValueError("模型名称不能为空")
+        if not model.credential.api_key:
+            raise ValueError("模型 API Key 不能为空")
+        payload = {
+            "model": model.model_name,
+            "messages": messages,
+            "stream": stream,
+            "temperature": 0,
+        }
+        endpoint = self._chat_completions_endpoint(model.base_url)
         headers = {
             "Authorization": f"Bearer {model.credential.api_key}",
             "Content-Type": "application/json",

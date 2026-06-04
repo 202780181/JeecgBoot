@@ -124,6 +124,7 @@ class ContextFragment(BaseModel):
 
 class ContextSource(BaseModel):
     summary: ContextSummary = Field(default_factory=ContextSummary)
+    active_task_snapshots: list[ContextFragment] = Field(default_factory=list)
     recent_messages: list[ContextMessage] = Field(default_factory=list)
     relevant_messages: list[ContextMessage] = Field(default_factory=list)
     relevant_fragments: list[ContextFragment] = Field(default_factory=list)
@@ -149,16 +150,19 @@ class AppDebugResponse(BaseModel):
 
 
 class AppChatStreamRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     app: AiAppConfig
     input: str = Field(min_length=1)
-    conversation_id: str | None = None
-    topic_id: str | None = None
-    enable_search: bool = False
-    skill_ids: list[str] = Field(default_factory=list)
+    run_id: str = Field(alias="runId")
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    topic_id: str | None = Field(default=None, alias="topicId")
+    enable_search: bool = Field(default=False, alias="enableSearch")
+    skill_ids: list[str] = Field(default_factory=list, alias="skillIds")
     attachments: list[ChatAttachment] = Field(default_factory=list)
     messages: list[ChatContextMessage] = Field(default_factory=list)
-    context_source: ContextSource = Field(default_factory=ContextSource)
-    user_context: UserContext = Field(default_factory=UserContext)
+    context_source: ContextSource = Field(default_factory=ContextSource, alias="contextSource")
+    user_context: UserContext = Field(default_factory=UserContext, alias="userContext")
 
 
 class ContextCompactionSource(BaseModel):
@@ -184,6 +188,51 @@ class ContextCompactionResponse(BaseModel):
     active_context_token_count: int = Field(alias="activeContextTokenCount")
     token_ledger: dict = Field(default_factory=dict, alias="tokenLedger")
     metadata: dict = Field(default_factory=dict)
+
+
+class BuilderCreateWorkspaceRequest(BaseModel):
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+
+
+class BuilderFindWorkspaceRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+class BuilderSearchFilesRequest(BaseModel):
+    query: str
+    max_results: int = Field(default=50, alias="maxResults")
+
+
+class BuilderGrepFilesRequest(BaseModel):
+    query: str
+    max_results: int = Field(default=80, alias="maxResults")
+
+
+class BuilderReadFileRequest(BaseModel):
+    path: str = Field(min_length=1)
+
+
+class BuilderWriteFileRequest(BaseModel):
+    path: str = Field(min_length=1)
+    content: str
+
+
+class BuilderApplyPatchRequest(BaseModel):
+    patch: str = Field(min_length=1)
+
+
+class BuilderBuildRequest(BaseModel):
+    install: bool = False
+
+
+class BuilderRunScriptRequest(BaseModel):
+    script: str = Field(min_length=1)
+    install: bool = False
+
+
+class BuilderPreviewCheckRequest(BaseModel):
+    pass
 
 
 class ModelCredential(BaseModel):

@@ -10,6 +10,15 @@ export type AiSdkUIDataTypes = {
     items: AiSdkSourceItem[];
   };
   weather: Recordable;
+  toolProgress: {
+    items: AiSdkToolProgressItem[];
+  };
+  fileChanges: {
+    items: AiSdkFileChangeItem[];
+  };
+  operationLog: {
+    items: AiSdkOperationLogItem[];
+  };
 };
 
 export type AiSdkSpecStage = 'start' | 'spec' | 'plan' | 'tasks' | 'completed' | 'failed' | string;
@@ -74,12 +83,36 @@ export interface AiSdkSourceItem {
   source?: string;
 }
 
+export interface AiSdkToolProgressItem {
+  id: string;
+  toolName: string;
+  title: string;
+  detail?: string;
+}
+
+export interface AiSdkFileChangeItem {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface AiSdkOperationLogItem {
+  id: string;
+  icon: 'search' | 'terminal' | 'edit' | 'tool';
+  text: string;
+  detail?: string;
+  status?: 'running' | 'done' | 'error';
+}
+
 export type AiSdkUIMessage = UIMessage<AiSdkMessageMetadata, AiSdkUIDataTypes>;
 export type AiSdkMessagePart = AiSdkUIMessage['parts'][number];
 export type AiSdkTextPart = Extract<AiSdkMessagePart, { type: 'text' }>;
 export type AiSdkThinkingPart = Extract<AiSdkMessagePart, { type: 'data-thinking' }>;
 export type AiSdkSourcePart = Extract<AiSdkMessagePart, { type: 'data-source' }>;
 export type AiSdkWeatherPart = Extract<AiSdkMessagePart, { type: 'data-weather' }>;
+export type AiSdkToolProgressPart = Extract<AiSdkMessagePart, { type: 'data-toolProgress' }>;
+export type AiSdkFileChangesPart = Extract<AiSdkMessagePart, { type: 'data-fileChanges' }>;
+export type AiSdkOperationLogPart = Extract<AiSdkMessagePart, { type: 'data-operationLog' }>;
 
 export interface AiSdkHistoryItem {
   id: string;
@@ -113,68 +146,130 @@ export interface AiSdkServerMessage {
   modelId?: string;
   skillIds?: string[];
   metadata?: Recordable;
+  runEvents?: AiSdkServerRunEvent[];
+  createTime?: string;
+}
+
+export interface AiSdkServerRunEvent {
+  id: string;
+  runId: string;
+  conversationId: string;
+  sequence: number;
+  eventType: OrchestratorEventName;
+  phase: string;
+  status: string;
+  payload?: OrchestratorStreamEvent | Recordable | null;
   createTime?: string;
 }
 
 export type OrchestratorEventName =
-  | 'INIT_REQUEST_ID'
+  | 'RUN_STARTED'
+  | 'PREFLIGHT'
   | 'MESSAGE'
   | 'TOOL_CALL'
   | 'TOOL_RESULT'
   | 'SKILL_SELECTED'
   | 'SPEC_EVENT'
   | 'MESSAGE_END'
+  | 'CANCELLED'
   | 'ERROR';
 
 export interface OrchestratorStreamEvent {
+  version: string;
+  runId: string;
+  sequence: number;
   event: OrchestratorEventName;
-  requestId?: string;
+  phase: string;
+  status: string;
+  timestamp: number;
+  messageId?: string | null;
   conversationId?: string;
   topicId?: string;
   data?: Recordable | null;
 }
 
+export interface OrchestratorEventEnvelope {
+  version: string;
+  runId: string;
+  sequence: number;
+  phase: string;
+  status: string;
+  timestamp: number;
+  messageId?: string | null;
+  conversationId?: string;
+  topicId?: string;
+}
+
+export interface OrchestratorEventDisplay {
+  kind?: 'operation' | 'file_changes' | 'source' | 'message' | string;
+  icon?: string;
+  text?: string;
+  detail?: string;
+  status?: 'running' | 'done' | 'error' | 'cancelled' | string;
+}
+
+export interface OrchestratorEventData extends Recordable {
+  title?: string;
+  summary?: string;
+  display?: OrchestratorEventDisplay | null;
+  artifacts?: Recordable[];
+  fileChanges?: AiSdkFileChangeItem[];
+}
+
 export type NormalizedOrchestratorStreamEvent =
   | {
-      event: 'INIT_REQUEST_ID';
-      requestId?: string;
-      conversationId?: string;
-      topicId?: string;
-    }
+      event: 'RUN_STARTED';
+    } & OrchestratorEventEnvelope
+  | {
+      event: 'PREFLIGHT';
+      data: OrchestratorEventData & {
+        intent: string;
+        riskLevel: string;
+        summary: string;
+        operationNote: string;
+        safetyNotes: string[];
+        proposedSteps: string[];
+        verificationSteps: string[];
+        needsClarification: boolean;
+        requiresConfirmation: boolean;
+        blocked: boolean;
+        blockReason?: string;
+      };
+    } & OrchestratorEventEnvelope
   | {
       event: 'MESSAGE';
-      data: {
+      data: OrchestratorEventData & {
         message: string;
       };
-    }
+    } & OrchestratorEventEnvelope
   | {
       event: 'TOOL_CALL';
-      data: {
+      data: OrchestratorEventData & {
         title: string;
         toolName: string;
         input?: Recordable | null;
         toolCallId?: string;
       };
-    }
+    } & OrchestratorEventEnvelope
   | {
       event: 'TOOL_RESULT';
-      data: {
+      data: OrchestratorEventData & {
         title: string;
         toolName: string;
         result: Recordable | null;
         toolCallId?: string;
       };
-    }
+    } & OrchestratorEventEnvelope
   | {
       event: 'SKILL_SELECTED';
-      data: {
+      data: OrchestratorEventData & {
         skillId?: string;
         skillName: string;
       };
-    }
+    } & OrchestratorEventEnvelope
   | {
       event: 'SPEC_EVENT';
-      data: {
+      data: OrchestratorEventData & {
         stage: AiSdkSpecStage;
         status: string;
         message: string;
@@ -185,16 +280,22 @@ export type NormalizedOrchestratorStreamEvent =
         artifact?: AiSdkSpecArtifact | null;
         result?: AiSdkSpecResult | null;
       };
-    }
+    } & OrchestratorEventEnvelope
   | {
       event: 'MESSAGE_END';
-    }
+    } & OrchestratorEventEnvelope
   | {
-      event: 'ERROR';
-      data: {
+      event: 'CANCELLED';
+      data: OrchestratorEventData & {
         message: string;
       };
-    };
+    } & OrchestratorEventEnvelope
+  | {
+      event: 'ERROR';
+      data: OrchestratorEventData & {
+        message: string;
+      };
+    } & OrchestratorEventEnvelope;
 
 export interface ComposerAttachment {
   id: string;

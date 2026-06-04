@@ -27,6 +27,8 @@ public interface IAiSdkConversationService extends IService<AiSdkConversation> {
 
     AiSdkMessage saveAssistantMessage(String conversationId, String content, String status, AiragApp app, AppDebugParams request, Map<String, Object> metadata);
 
+    AiSdkMessage saveAssistantMessageProjection(String messageId, String conversationId, String content, String status, String modelId, Map<String, Object> metadata);
+
     List<Map<String, Object>> findLatestAttachments(String conversationId, HttpServletRequest httpRequest);
 
     Map<String, Object> buildContextSource(String conversationId, String currentMessageId, String queryText, HttpServletRequest httpRequest);

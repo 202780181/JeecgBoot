@@ -118,3 +118,38 @@ def test_context_compactor_builds_response_from_real_model_call(monkeypatch):
     assert response.token_ledger["compactedMessageCount"] == 1
     assert response.metadata["messageCount"] == 1
     assert response.metadata["activeContextSnapshotVersion"] == 1
+
+
+def test_context_compactor_falls_back_when_model_returns_empty_summary(monkeypatch):
+    class FakeJeecgClient:
+        async def get_model_config(self, model_id, user_context):
+            return ModelConfig(
+                id=model_id,
+                model_name="test-model",
+                base_url="https://example.com/v1",
+                credential=ModelCredential(api_key="test-key"),
+            )
+
+    async def fake_complete_json(model, prompt):
+        raise ValueError("模型摘要压缩返回空内容")
+
+    compactor = ContextCompactor(jeecg_client=FakeJeecgClient())
+    monkeypatch.setattr(compactor, "_complete_json", fake_complete_json)
+    request = ContextCompactionRequest(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        conversation_id="conversation-1",
+        context_source=ContextCompactionSource(
+            messages=[
+                ContextMessage(id="message-1", role="user", content="重新修改点单页面"),
+                ContextMessage(id="message-2", role="assistant", content="已读取页面并准备修改"),
+            ]
+        ),
+        user_context=UserContext(),
+    )
+
+    response = asyncio.run(compactor.compact(request))
+
+    assert response.summary_message_id == "message-2"
+    assert response.metadata["fallback"] is True
+    assert "重新修改点单页面" in response.summary_text
+    assert '"snapshotType": "active_context_snapshot"' in response.active_context_snapshot

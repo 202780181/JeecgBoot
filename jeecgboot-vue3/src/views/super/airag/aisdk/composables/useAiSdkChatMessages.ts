@@ -1,11 +1,17 @@
 import { Chat } from '@ai-sdk/vue';
 import type {
+  AiSdkFileChangeItem,
+  AiSdkFileChangesPart,
   AiSdkMessageMetadata,
   AiSdkMessagePart,
+  AiSdkOperationLogItem,
+  AiSdkOperationLogPart,
   AiSdkSourceItem,
   AiSdkSourcePart,
   AiSdkTextPart,
   AiSdkThinkingPart,
+  AiSdkToolProgressItem,
+  AiSdkToolProgressPart,
   AiSdkUIMessage,
   AiSdkWeatherPart,
 } from '../types';
@@ -91,6 +97,58 @@ export function useAiSdkChatMessages() {
     });
   }
 
+  function upsertToolProgressPart(id: string, item: AiSdkToolProgressItem) {
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: mergeToolProgressPart(getMessageParts(message), item),
+      };
+    });
+  }
+
+  function removeToolProgressPart(id: string, itemId: string) {
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: removeToolProgressItem(getMessageParts(message), itemId),
+      };
+    });
+  }
+
+  function clearToolProgressParts(id: string) {
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: removeToolProgressParts(getMessageParts(message)),
+      };
+    });
+  }
+
+  function appendFileChangesPart(id: string, items: AiSdkFileChangeItem[]) {
+    if (!items.length) return;
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: mergeFileChangesPart(getMessageParts(message), items),
+      };
+    });
+  }
+
+  function appendOperationLogPart(id: string, item: AiSdkOperationLogItem) {
+    if (!item.id || !item.text) return;
+    chat.messages = chat.messages.map((message): AiSdkUIMessage => {
+      if (message.id !== id) return message;
+      return {
+        ...message,
+        parts: mergeOperationLogPart(getMessageParts(message), item),
+      };
+    });
+  }
+
   function clearMessages() {
     chat.messages = [];
   }
@@ -102,7 +160,17 @@ export function useAiSdkChatMessages() {
       nextParts[firstTextPartIndex] = createTextPart(text, state);
       return nextParts;
     }
-    return [createTextPart(text, state), ...nextParts];
+    const insertIndex = getTextInsertIndex(nextParts);
+    nextParts.splice(insertIndex, 0, createTextPart(text, state));
+    return nextParts;
+  }
+
+  function getTextInsertIndex(parts: AiSdkMessagePart[]) {
+    const operationIndex = parts.findIndex((part) => part.type === 'data-operationLog');
+    if (operationIndex >= 0) return operationIndex + 1;
+    const toolProgressIndex = parts.findIndex((part) => part.type === 'data-toolProgress');
+    if (toolProgressIndex >= 0) return toolProgressIndex + 1;
+    return 0;
   }
 
   function removeThinkingParts(parts: AiSdkMessagePart[]): AiSdkMessagePart[] {
@@ -116,9 +184,10 @@ export function useAiSdkChatMessages() {
   function updateThinkingMessage(id: string, text: string) {
     chat.messages = chat.messages.map((message): AiSdkUIMessage => {
       if (message.id !== id) return message;
+      const nextParts = removeThinkingParts(getMessageParts(message));
       return {
         ...message,
-        parts: [createThinkingPart(text)],
+        parts: [createThinkingPart(text), ...nextParts],
       };
     });
   }
@@ -135,6 +204,18 @@ export function useAiSdkChatMessages() {
     return { type: 'data-source', data: { items } };
   }
 
+  function createToolProgressPart(items: AiSdkToolProgressItem[]): AiSdkToolProgressPart {
+    return { type: 'data-toolProgress', data: { items } };
+  }
+
+  function createFileChangesPart(items: AiSdkFileChangeItem[]): AiSdkFileChangesPart {
+    return { type: 'data-fileChanges', data: { items } };
+  }
+
+  function createOperationLogPart(items: AiSdkOperationLogItem[]): AiSdkOperationLogPart {
+    return { type: 'data-operationLog', data: { items } };
+  }
+
   function mergeSourcePart(parts: AiSdkMessagePart[], items: AiSdkSourceItem[]): AiSdkMessagePart[] {
     const nextParts = removeThinkingParts(parts);
     const index = nextParts.findIndex((part) => part.type === 'data-source');
@@ -143,6 +224,77 @@ export function useAiSdkChatMessages() {
     }
     const current = nextParts[index] as AiSdkSourcePart;
     nextParts[index] = createSourcePart(dedupeSources([...(current.data.items || []), ...items]));
+    return nextParts;
+  }
+
+  function mergeToolProgressPart(parts: AiSdkMessagePart[], item: AiSdkToolProgressItem): AiSdkMessagePart[] {
+    const nextParts = removeThinkingParts(parts);
+    const index = nextParts.findIndex((part) => part.type === 'data-toolProgress');
+    if (index < 0) {
+      return [...nextParts, createToolProgressPart([item])];
+    }
+    const current = nextParts[index] as AiSdkToolProgressPart;
+    const items = [...(current.data.items || [])];
+    const itemIndex = items.findIndex((currentItem) => currentItem.id === item.id);
+    if (itemIndex >= 0) {
+      items[itemIndex] = { ...items[itemIndex], ...item };
+    } else {
+      items.push(item);
+    }
+    nextParts[index] = createToolProgressPart(items.slice(-12));
+    return nextParts;
+  }
+
+  function removeToolProgressItem(parts: AiSdkMessagePart[], itemId: string): AiSdkMessagePart[] {
+    const nextParts = removeThinkingParts(parts);
+    const index = nextParts.findIndex((part) => part.type === 'data-toolProgress');
+    if (index < 0) return nextParts;
+    const current = nextParts[index] as AiSdkToolProgressPart;
+    const items = (current.data.items || []).filter((item) => item.id !== itemId);
+    if (!items.length) {
+      nextParts.splice(index, 1);
+      return nextParts;
+    }
+    nextParts[index] = createToolProgressPart(items);
+    return nextParts;
+  }
+
+  function removeToolProgressParts(parts: AiSdkMessagePart[]): AiSdkMessagePart[] {
+    return removeThinkingParts(parts).filter((part) => part.type !== 'data-toolProgress') as AiSdkMessagePart[];
+  }
+
+  function mergeFileChangesPart(parts: AiSdkMessagePart[], items: AiSdkFileChangeItem[]): AiSdkMessagePart[] {
+    const nextParts = removeThinkingParts(parts);
+    const index = nextParts.findIndex((part) => part.type === 'data-fileChanges');
+    const merged = dedupeFileChanges(index >= 0 ? [...((nextParts[index] as AiSdkFileChangesPart).data.items || []), ...items] : items);
+    if (!merged.length) {
+      if (index >= 0) {
+        nextParts.splice(index, 1);
+      }
+      return nextParts;
+    }
+    if (index < 0) {
+      return [...nextParts, createFileChangesPart(merged)];
+    }
+    nextParts[index] = createFileChangesPart(merged);
+    return nextParts;
+  }
+
+  function mergeOperationLogPart(parts: AiSdkMessagePart[], item: AiSdkOperationLogItem): AiSdkMessagePart[] {
+    const nextParts = removeThinkingParts(parts);
+    const index = nextParts.findIndex((part) => part.type === 'data-operationLog');
+    if (index < 0) {
+      return [...nextParts, createOperationLogPart([item])];
+    }
+    const current = nextParts[index] as AiSdkOperationLogPart;
+    const items = [...(current.data.items || [])];
+    const itemIndex = items.findIndex((currentItem) => currentItem.id === item.id);
+    if (itemIndex >= 0) {
+      items[itemIndex] = item;
+    } else {
+      items.push(item);
+    }
+    nextParts[index] = createOperationLogPart(items.slice(-8));
     return nextParts;
   }
 
@@ -157,10 +309,29 @@ export function useAiSdkChatMessages() {
     return result.slice(0, 6);
   }
 
+  function dedupeFileChanges(items: AiSdkFileChangeItem[]) {
+    const map = new Map<string, AiSdkFileChangeItem>();
+    for (const item of items) {
+      if (!item.path) continue;
+      const current = map.get(item.path);
+      map.set(item.path, {
+        path: item.path,
+        additions: (current?.additions || 0) + Math.max(0, item.additions || 0),
+        deletions: (current?.deletions || 0) + Math.max(0, item.deletions || 0),
+      });
+    }
+    return Array.from(map.values()).filter((item) => item.additions > 0 || item.deletions > 0);
+  }
+
   return {
     addMessage,
     addThinkingMessage,
+    appendOperationLogPart,
     appendSourcePart,
+    appendFileChangesPart,
+    upsertToolProgressPart,
+    removeToolProgressPart,
+    clearToolProgressParts,
     appendWeatherPart,
     chat,
     clearMessages,

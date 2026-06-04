@@ -4,6 +4,11 @@ from app.models.schemas import AiAppConfig, AppChatStreamRequest, ContextFragmen
 from app.services.context_builder import ContextBuilder
 
 
+def chat_request(**kwargs) -> AppChatStreamRequest:
+    kwargs.setdefault("runId", "run_test")
+    return AppChatStreamRequest(**kwargs)
+
+
 def build_messages(request: AppChatStreamRequest, model: ModelConfig, current_input: str | None = None):
     return asyncio.run(
         ContextBuilder().build(
@@ -16,7 +21,7 @@ def build_messages(request: AppChatStreamRequest, model: ModelConfig, current_in
 
 
 def test_context_builder_keeps_required_messages_under_small_budget():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="当前输入必须保留",
         context_source=ContextSource(
@@ -55,7 +60,7 @@ def test_context_builder_defaults_to_safe_large_context_window():
 
 
 def test_context_builder_uses_active_context_snapshot_as_summary_context():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="继续做下一步",
         context_source=ContextSource(
@@ -76,8 +81,49 @@ def test_context_builder_uses_active_context_snapshot_as_summary_context():
     assert "active_context_snapshot" in joined
 
 
+def test_context_builder_puts_active_task_snapshot_before_summary_and_fragments():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="继续修改点单页面",
+        context_source=ContextSource(
+            summary=ContextSummary(text="旧的会话摘要", contextVersion=4),
+            active_task_snapshots=[
+                ContextFragment(
+                    type="active_task_snapshot",
+                    text="当前任务状态快照：当前工作区=lululai-luwei-regenerate-c85937bf\n相关文件=src/pages/order/order.vue",
+                    metadata={"workspaceId": "lululai-luwei-regenerate-c85937bf"},
+                    create_time="3",
+                ),
+            ],
+            relevant_fragments=[
+                ContextFragment(
+                    type="active_task_snapshot",
+                    text="重复的当前任务状态快照",
+                    metadata={"workspaceId": "lululai-luwei-regenerate-c85937bf"},
+                    create_time="2",
+                ),
+                ContextFragment(type="file_change", text="普通文件变更片段", create_time="1"),
+            ],
+        ),
+    )
+    model = ModelConfig(id="model-1", model_name="test-model", base_url="https://example.com/v1")
+
+    messages = build_messages(request, model)
+    contents = [message["content"] for message in messages]
+    joined = "\n".join(contents)
+
+    task_index = next(i for i, content in enumerate(contents) if "当前任务状态（必须优先遵循）" in content)
+    summary_index = next(i for i, content in enumerate(contents) if "会话摘要" in content)
+    fragment_index = next(i for i, content in enumerate(contents) if "可用上下文片段" in content)
+
+    assert task_index < summary_index < fragment_index
+    assert "lululai-luwei-regenerate-c85937bf" in contents[task_index]
+    assert "普通文件变更片段" in joined
+    assert "重复的当前任务状态快照" not in joined
+
+
 def test_context_builder_dedupes_fragments_by_url():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="总结上下文",
         context_source=ContextSource(
@@ -97,7 +143,7 @@ def test_context_builder_dedupes_fragments_by_url():
 
 
 def test_context_builder_reranks_source_when_user_mentions_sources():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="用刚才联网搜索的来源继续总结",
         context_source=ContextSource(
@@ -116,7 +162,7 @@ def test_context_builder_reranks_source_when_user_mentions_sources():
 
 
 def test_context_builder_includes_relevant_messages_before_recent_messages():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="继续之前那个部署问题",
         context_source=ContextSource(
@@ -139,7 +185,7 @@ def test_context_builder_includes_relevant_messages_before_recent_messages():
 
 
 def test_context_builder_excludes_attachment_summaries_when_user_does_not_reference_files():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="帮我查一查今天AI有哪些新闻",
         context_source=ContextSource(
@@ -161,7 +207,7 @@ def test_context_builder_excludes_attachment_summaries_when_user_does_not_refere
 
 
 def test_context_builder_includes_attachment_summaries_when_user_references_previous_file():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="读取之前上传的 test.txt 文件第一行",
         context_source=ContextSource(
@@ -183,7 +229,7 @@ def test_context_builder_includes_attachment_summaries_when_user_references_prev
 
 
 def test_context_builder_includes_high_similarity_attachment_match():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="这个部署流程怎么继续",
         context_source=ContextSource(
@@ -205,7 +251,7 @@ def test_context_builder_includes_high_similarity_attachment_match():
 
 
 def test_context_builder_truncates_long_fragments_before_old_messages():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="当前问题",
         context_source=ContextSource(

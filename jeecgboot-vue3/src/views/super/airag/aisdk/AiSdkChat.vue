@@ -62,6 +62,44 @@
               <div v-else-if="part.type === 'data-thinking'" class="thinking-text" aria-live="polite">
                 {{ part.data.text || '正在思考' }}
               </div>
+              <div v-else-if="part.type === 'data-toolProgress' && part.data.items?.length" class="tool-progress-list" aria-live="polite">
+                <div v-for="item in part.data.items" :key="item.id" class="tool-progress-item">
+                  <span class="tool-progress-dot"></span>
+                  <span class="tool-progress-main">
+                    <span class="tool-progress-title">{{ item.title }}</span>
+                    <span v-if="item.detail" class="tool-progress-detail">{{ item.detail }}</span>
+                  </span>
+                </div>
+              </div>
+              <div v-else-if="part.type === 'data-operationLog' && part.data.items?.length" class="operation-log-list">
+                <div v-for="item in part.data.items" :key="item.id" class="operation-log-item" :class="`is-${item.status || 'done'}`">
+                  <Icon :icon="getOperationLogIcon(item.icon)" />
+                  <span class="operation-log-content">
+                    <span class="operation-log-text">{{ item.text }}</span>
+                    <span v-if="item.detail" class="operation-log-detail">{{ item.detail }}</span>
+                  </span>
+                </div>
+              </div>
+              <div v-else-if="part.type === 'data-fileChanges' && part.data.items?.length" class="file-changes-card">
+                <div class="file-changes-header">
+                  <div>
+                    <strong>已编辑 {{ part.data.items.length }} 个文件</strong>
+                    <span>
+                      <em>+{{ getFileChangeTotal(part.data.items, 'additions') }}</em>
+                      <i>-{{ getFileChangeTotal(part.data.items, 'deletions') }}</i>
+                    </span>
+                  </div>
+                </div>
+                <div class="file-changes-list">
+                  <div v-for="item in part.data.items" :key="item.path" class="file-changes-item">
+                    <span>{{ item.path }}</span>
+                    <span class="file-changes-delta">
+                      <em>+{{ item.additions || 0 }}</em>
+                      <i>-{{ item.deletions || 0 }}</i>
+                    </span>
+                  </div>
+                </div>
+              </div>
               <AiSdkSourceList
                 v-else-if="part.type === 'data-source' && part.data.items?.length"
                 :items="part.data.items"
@@ -84,7 +122,7 @@ import Icon from '@/components/Icon';
 import { usePageContext } from '@/hooks/component/usePageContext';
 import { useMessage } from '@/hooks/web/useMessage';
 import { debugAssistant, getOrchestratorSkills, uploadAiSdkAttachment, type AiSkillOption } from './api/AiSdkChat.api';
-import { AI_SDK_SESSION_TYPE, type AiSdkMessageAttachment, type AiSdkMessageSkill, type AiSdkServerMessage, type AiSdkUIMessage } from './types';
+import { AI_SDK_SESSION_TYPE, type AiSdkMessageAttachment, type AiSdkMessageSkill, type AiSdkServerMessage, type AiSdkServerRunEvent, type AiSdkUIMessage, type OrchestratorStreamEvent } from './types';
 import type { AiSdkComposerActions, AiSdkComposerState } from './types/composer';
 import { useAiSdkChatMessages } from './composables/useAiSdkChatMessages';
 import { useAiSdkConversationHistory } from './composables/useAiSdkConversationHistory';
@@ -153,14 +191,19 @@ const { attachments, addAttachments, clearAttachments, formatFileSize, removeAtt
 const { 
   addMessage, 
   addThinkingMessage, 
+  appendFileChangesPart,
+  appendOperationLogPart,
   appendSourcePart,
   appendWeatherPart, 
   chat, 
+  clearToolProgressParts,
   clearMessages: clearChatMessages, 
   findMessageById,
   finishMessage,
   getMessageParts, 
   getMessageText, 
+  removeToolProgressPart,
+  upsertToolProgressPart,
   updateThinkingMessage,
   updateMessage 
 } = useAiSdkChatMessages();
@@ -174,8 +217,13 @@ const {
    } = useAiSdkModels({
   onError: (message) => createMessage.warning(message),
 });
-const { renderAssistantStream } = useAiSdkStreamRenderer({
+const { renderAssistantEvents, renderAssistantStream } = useAiSdkStreamRenderer({
   appendSourcePart,
+  appendFileChangesPart,
+  appendOperationLogPart,
+  upsertToolProgressPart,
+  removeToolProgressPart,
+  clearToolProgressParts,
   appendWeatherPart,
   finishMessage,
   updateThinkingMessage,
@@ -250,6 +298,7 @@ const {
     clearAttachments();
     selectedSkillIds.value = getLastUserSkillIds(messages);
     chat.messages = messages.map(toUiMessage);
+    replayMessageRunEvents(messages);
     await scrollToBottom();
   },
   onConversationCleared: () => {
@@ -296,6 +345,13 @@ function getAttachmentIcon(attachment: AiSdkMessageAttachment) {
   return 'ant-design:file-outlined';
 }
 
+function getOperationLogIcon(icon: 'search' | 'terminal' | 'edit' | 'tool') {
+  if (icon === 'search') return 'ant-design:search-outlined';
+  if (icon === 'terminal') return 'ant-design:code-outlined';
+  if (icon === 'edit') return 'ant-design:edit-outlined';
+  return 'ant-design:tool-outlined';
+}
+
 function toUiMessage(message: AiSdkServerMessage): AiSdkUIMessage {
   const role = message.role === 'user' ? 'user' : 'assistant';
   const skillIds = Array.isArray(message.skillIds) ? message.skillIds : [];
@@ -320,12 +376,36 @@ function toUiMessage(message: AiSdkServerMessage): AiSdkUIMessage {
     parts: [
       {
         type: 'text',
-        text: message.content || '',
+        text: role === 'assistant' && hasRunEvents(message) ? '' : message.content || '',
         state: 'done',
       },
     ],
     ...(Object.keys(uiMetadata).length ? { metadata: uiMetadata } : {}),
   };
+}
+
+function replayMessageRunEvents(messages: AiSdkServerMessage[]) {
+  messages.forEach((message) => {
+    if (message.role !== 'assistant' || !hasRunEvents(message)) return;
+    const events = normalizeRunEvents(message.runEvents || []);
+    if (!events.length) return;
+    renderAssistantEvents(events, message.id);
+  });
+}
+
+function hasRunEvents(message: AiSdkServerMessage) {
+  return Array.isArray(message.runEvents) && message.runEvents.length > 0;
+}
+
+function normalizeRunEvents(events: AiSdkServerRunEvent[]): OrchestratorStreamEvent[] {
+  return events
+    .map((event) => {
+      const payload = event.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+      return payload as OrchestratorStreamEvent;
+    })
+    .filter((event): event is OrchestratorStreamEvent => !!event?.event && !!event.runId && typeof event.sequence === 'number')
+    .sort((a, b) => a.sequence - b.sequence);
 }
 
 function normalizeMessageAttachments(value: unknown): AiSdkMessageAttachment[] {
@@ -346,6 +426,10 @@ function normalizeMessageAttachments(value: unknown): AiSdkMessageAttachment[] {
 function getLastUserSkillIds(messages: AiSdkServerMessage[]) {
   const userMessage = [...messages].reverse().find((message) => message.role === 'user' && Array.isArray(message.skillIds));
   return userMessage?.skillIds?.slice(0, 1) || [];
+}
+
+function getFileChangeTotal(items: Array<{ additions?: number; deletions?: number }>, key: 'additions' | 'deletions') {
+  return items.reduce((total, item) => total + (typeof item[key] === 'number' ? item[key]! : 0), 0);
 }
 
 async function buildAttachmentPayload() {

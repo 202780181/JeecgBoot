@@ -5,14 +5,21 @@ from pathlib import Path
 import httpx
 
 from app.models.events import StreamEventType, stream_event
-from app.models.schemas import AiAppConfig, AppChatStreamRequest, ChatAttachment, ModelConfig, ModelCredential
+from app.models.schemas import AiAppConfig, AppChatStreamRequest, ChatAttachment, ContextFragment, ContextMessage, ContextSource, ContextSummary, ModelConfig, ModelCredential
+from app.services.agent_loop import BuilderAgentLoop
 from app.services.chat_service import ChatService
 from app.services.spec_service import SpecKitResult
 from app.skills import SkillRegistry
 from app.skills.base import SkillSpec
 from app.tools import ToolRegistry
+from app.tools.base import BaseTool, ToolResult, ToolSpec
 from app.tools.weather import WeatherTool
 from app.tools.web_search import WebSearchTool
+
+
+def chat_request(**kwargs) -> AppChatStreamRequest:
+    kwargs.setdefault("run_id", "run_test")
+    return AppChatStreamRequest(**kwargs)
 
 
 class FakeJeecgClient:
@@ -28,6 +35,15 @@ class FakeChatService(ChatService):
     async def _stream_complete(self, model, request, messages, use_tools=False):
         yield "reply:"
         yield request.input
+
+
+class FakePreflightClassifyingChatService(FakeChatService):
+    def __init__(self, *args, classification_text: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.classification_text = classification_text
+
+    async def _classify_agent_intent(self, model, request):
+        return self._parse_intent_classification(self.classification_text)
 
 
 def fake_spec_generator(requirement: str) -> SpecKitResult:
@@ -46,7 +62,7 @@ def fake_spec_generator(requirement: str) -> SpecKitResult:
 
 class FakeToolCallingChatService(ChatService):
     async def _stream_complete(self, model, request, messages, use_tools=False):
-        if use_tools:
+        if use_tools and not any(message.get("role") == "tool" for message in messages):
             yield {
                 "id": "call-weather-1",
                 "type": "function",
@@ -61,7 +77,7 @@ class FakeToolCallingChatService(ChatService):
 
 class FakeWebSearchChatService(ChatService):
     async def _stream_complete(self, model, request, messages, use_tools=False):
-        if use_tools:
+        if use_tools and not any(message.get("role") == "tool" for message in messages):
             yield {
                 "id": "call-search-1",
                 "type": "function",
@@ -72,6 +88,120 @@ class FakeWebSearchChatService(ChatService):
             }
             return
         yield "已根据搜索结果总结。"
+
+
+class FakeBuilderRepairChatService(ChatService):
+    async def _stream_complete(self, model, request, messages, use_tools=False):
+        tool_messages = [message for message in messages if message.get("role") == "tool"]
+        repair_prompts = [message for message in messages if message.get("role") == "user" and "自动校验失败" in str(message.get("content"))]
+        write_count = sum(1 for message in tool_messages if message.get("name") == "builder_write_file")
+        build_count = sum(1 for message in tool_messages if message.get("name") == "builder_run_script")
+        if use_tools and write_count == 0:
+            yield {
+                "id": "call-write-1",
+                "type": "function",
+                "function": {
+                    "name": "builder_write_file",
+                    "arguments": json.dumps(
+                        {"workspaceId": "workspace-1", "path": "src/pages/order/order.vue", "content": "<template>broken</template>"},
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            return
+        if use_tools and build_count == 1 and repair_prompts and write_count == 1:
+            yield {
+                "id": "call-write-2",
+                "type": "function",
+                "function": {
+                    "name": "builder_write_file",
+                    "arguments": json.dumps(
+                        {"workspaceId": "workspace-1", "path": "src/pages/order/order.vue", "content": "<template>fixed</template>"},
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            return
+        yield "已完成修改并通过自动构建校验。"
+
+
+class FakeBuilderWriteTool(BaseTool):
+    spec = ToolSpec(
+        name="builder_write_file",
+        description="写入 Builder 工作区中的文本文件。",
+        input_schema={"type": "object", "properties": {}, "required": []},
+    )
+
+    def call_title(self, tool_input):
+        return f"写入文件：{tool_input.get('path')}"
+
+    async def run(self, tool_input):
+        return ToolResult(
+            tool_name=self.spec.name,
+            result={
+                "workspaceId": tool_input["workspaceId"],
+                "path": tool_input["path"],
+                "bytesWritten": len(tool_input.get("content") or ""),
+                "additions": 1,
+                "deletions": 1,
+            },
+        )
+
+
+class FakeBuilderRunScriptTool(BaseTool):
+    spec = ToolSpec(
+        name="builder_run_script",
+        description="在 Builder 工作区执行安全白名单 pnpm 脚本。",
+        input_schema={"type": "object", "properties": {}, "required": []},
+    )
+
+    def __init__(self):
+        self.calls = 0
+
+    def call_title(self, tool_input):
+        return f"运行 {tool_input.get('script')}"
+
+    async def run(self, tool_input):
+        self.calls += 1
+        status = "failed" if self.calls == 1 else "success"
+        return ToolResult(
+            tool_name=self.spec.name,
+            status=status,
+            result={
+                "workspaceId": tool_input["workspaceId"],
+                "command": ["pnpm", tool_input["script"]],
+                "status": status,
+                "exitCode": 1 if status == "failed" else 0,
+                "stdout": "",
+                "stderr": "src/pages/order/order.vue: template syntax error" if status == "failed" else "",
+            },
+        )
+
+
+class FakeBuilderCheckPreviewH5Tool(BaseTool):
+    spec = ToolSpec(
+        name="builder_check_preview_h5",
+        description="检查 H5 预览。",
+        input_schema={"type": "object", "properties": {}, "required": []},
+    )
+
+    def call_title(self, tool_input):
+        return "检查 H5 预览"
+
+    async def run(self, tool_input):
+        return ToolResult(
+            tool_name=self.spec.name,
+            status="success",
+            result={
+                "workspaceId": tool_input["workspaceId"],
+                "status": "success",
+                "previewUrl": "http://127.0.0.1:9300",
+                "title": "JeecgUniapp",
+                "bodyText": "页面已渲染",
+                "consoleErrors": [],
+                "screenshotPath": "/tmp/screenshot.png",
+            },
+        )
 
 
 class FailingJeecgClient:
@@ -103,7 +233,8 @@ def parse_sse(event: str) -> dict:
 def test_stream_event_uses_unified_schema():
     event = parse_sse(
         stream_event(
-            "request-1",
+            "run-1",
+            7,
             StreamEventType.TOOL_CALL,
             {"toolName": "weather"},
             "conversation-1",
@@ -111,17 +242,21 @@ def test_stream_event_uses_unified_schema():
         )
     )
 
-    assert event == {
-        "event": "TOOL_CALL",
-        "requestId": "request-1",
-        "conversationId": "conversation-1",
-        "topicId": "topic-1",
-        "data": {"toolName": "weather"},
-    }
+    assert event["version"] == "2026-06-04"
+    assert event["runId"] == "run-1"
+    assert event["sequence"] == 7
+    assert event["event"] == "TOOL_CALL"
+    assert event["phase"] == "execute"
+    assert event["status"] == "running"
+    assert event["conversationId"] == "conversation-1"
+    assert event["topicId"] == "topic-1"
+    assert event["data"] == {"toolName": "weather"}
+    assert "timestamp" in event
+    assert "requestId" not in event
 
 
 def test_chat_stream_success_events():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="你好",
     )
@@ -129,16 +264,19 @@ def test_chat_stream_success_events():
     events = collect_stream(FakeChatService(FakeJeecgClient()), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert parsed_events[0]["event"] == "INIT_REQUEST_ID"
-    assert parsed_events[1]["event"] == "MESSAGE"
-    assert parsed_events[1]["data"]["message"] == "reply:"
+    assert parsed_events[0]["event"] == "RUN_STARTED"
+    assert parsed_events[0]["runId"] == "run_test"
+    assert [event["sequence"] for event in parsed_events] == list(range(1, len(parsed_events) + 1))
+    assert parsed_events[1]["event"] == "PREFLIGHT"
     assert parsed_events[2]["event"] == "MESSAGE"
-    assert parsed_events[2]["data"]["message"] == "你好"
+    assert parsed_events[2]["data"]["message"] == "reply:"
+    assert parsed_events[3]["event"] == "MESSAGE"
+    assert parsed_events[3]["data"]["message"] == "你好"
     assert parsed_events[-1]["event"] == "MESSAGE_END"
 
 
 def test_initial_messages_include_context_history():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="我刚才选的 skills 有哪些内容？",
         messages=[
@@ -158,7 +296,7 @@ def test_initial_messages_include_context_history():
 
 
 def test_initial_messages_send_current_image_attachment_as_vision_input():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="这是一张什么图片？",
         attachments=[
@@ -208,7 +346,7 @@ def test_skill_registry_lists_builtin_skills():
     assert {skill.id for skill in skills} >= {"jeecgboot-dev", "jeecgboot-uniapp-template"}
     uniapp = SkillRegistry().get("jeecgboot-uniapp-template")
     assert uniapp.selection_mode == "single"
-    assert uniapp.available_tool_names == ["weather"]
+    assert "builder_read_file" in uniapp.available_tool_names
     assert uniapp.forbidden_tool_names == ["weather"]
     assert uniapp.spec_kit.enabled is True
     assert "不要重新搭建框架" in uniapp.instruction
@@ -255,7 +393,7 @@ tags:
 
 
 def test_chat_stream_selected_skill_event_and_prompt():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="开发一个小程序页面",
         skill_ids=["jeecgboot-uniapp-template"],
@@ -266,18 +404,19 @@ def test_chat_stream_selected_skill_event_and_prompt():
     parsed_events = [parse_sse(event) for event in events]
     messages = initial_messages(service, request)
 
-    assert parsed_events[1]["event"] == "SKILL_SELECTED"
-    assert parsed_events[1]["data"]["skillId"] == "jeecgboot-uniapp-template"
-    assert parsed_events[2]["event"] == "SPEC_EVENT"
-    assert parsed_events[2]["data"]["stage"] == "start"
-    assert parsed_events[2]["data"]["template"] == "jeecgboot-uniapp-template"
-    assert parsed_events[3]["data"]["stage"] == "spec"
-    assert parsed_events[3]["data"]["artifact"]["path"] == "/tmp/spec.md"
-    assert parsed_events[4]["data"]["stage"] == "plan"
-    assert parsed_events[5]["data"]["stage"] == "tasks"
-    assert parsed_events[6]["data"]["stage"] == "completed"
-    assert parsed_events[6]["data"]["result"]["taskCount"] == 2
-    assert parsed_events[7]["event"] == "MESSAGE"
+    assert parsed_events[1]["event"] == "PREFLIGHT"
+    assert parsed_events[2]["event"] == "SKILL_SELECTED"
+    assert parsed_events[2]["data"]["skillId"] == "jeecgboot-uniapp-template"
+    assert parsed_events[3]["event"] == "SPEC_EVENT"
+    assert parsed_events[3]["data"]["stage"] == "start"
+    assert parsed_events[3]["data"]["template"] == "jeecgboot-uniapp-template"
+    assert parsed_events[4]["data"]["stage"] == "spec"
+    assert parsed_events[4]["data"]["artifact"]["path"] == "/tmp/spec.md"
+    assert parsed_events[5]["data"]["stage"] == "plan"
+    assert parsed_events[6]["data"]["stage"] == "tasks"
+    assert parsed_events[7]["data"]["stage"] == "completed"
+    assert parsed_events[7]["data"]["result"]["taskCount"] == 2
+    assert parsed_events[8]["event"] == "MESSAGE"
     assert "JeecgBoot UniApp 模板开发" in messages[0]["content"]
     assert "不要重新搭建框架" in messages[0]["content"]
     assert "spec-kit 绑定策略" in messages[0]["content"]
@@ -289,14 +428,280 @@ def test_skill_limits_available_tools():
 
     assert service._available_tool_names(None) == ["weather"]
     assert service._available_tool_names(None, enable_search=True) == ["weather", "web_search"]
-    assert service._available_tool_names(["jeecgboot-dev"]) == ["weather"]
-    assert service._available_tool_names(["jeecgboot-dev"], enable_search=True) == ["weather", "web_search"]
-    assert service._available_tool_names(["jeecgboot-uniapp-template"]) == []
-    assert service._available_tool_names(["jeecgboot-uniapp-template"], enable_search=True) == []
+    jeecgboot_dev_tools = service._available_tool_names(["jeecgboot-dev"])
+    assert "builder_read_file" in jeecgboot_dev_tools
+    assert "builder_write_file" in jeecgboot_dev_tools
+    assert "builder_apply_patch" in jeecgboot_dev_tools
+    assert "builder_grep_files" in jeecgboot_dev_tools
+    assert "web_search" in service._available_tool_names(["jeecgboot-dev"], enable_search=True)
+    assert "builder_read_file" in service._available_tool_names(["jeecgboot-uniapp-template"])
+    assert "weather" not in service._available_tool_names(["jeecgboot-uniapp-template"], enable_search=True)
+
+
+def test_preflight_emits_operation_note_before_model_response():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="帮我修改 AiSdkChat 的滚动逻辑",
+        skill_ids=["jeecgboot-dev"],
+    )
+
+    events = collect_stream(
+        FakePreflightClassifyingChatService(
+            FakeJeecgClient(),
+            classification_text=json.dumps(
+                {
+                    "intent": "code_change",
+                    "confidence": 0.94,
+                    "summary": "理解为需要修改点单页面。",
+                    "operationNote": "我会定位当前页面并直接修改项目文件。",
+                    "proposedSteps": ["定位页面文件", "修改必要文件", "运行校验"],
+                    "verificationSteps": ["运行 build:h5"],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+        request,
+    )
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert parsed_events[1]["event"] == "PREFLIGHT"
+    assert parsed_events[1]["data"]["intent"] == "code_change"
+    assert parsed_events[1]["data"]["riskLevel"] == "medium"
+    assert "定位页面文件" in parsed_events[1]["data"]["proposedSteps"]
+    assert any(event["event"] == "MESSAGE" for event in parsed_events)
+
+
+def test_preflight_allows_order_page_code_change_without_confirmation():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="重新修改一下我的点单页面",
+        skill_ids=["jeecgboot-uniapp-template"],
+    )
+
+    events = collect_stream(
+        FakePreflightClassifyingChatService(
+            FakeJeecgClient(),
+            classification_text=json.dumps(
+                {
+                    "intent": "code_change",
+                    "confidence": 0.94,
+                    "summary": "理解为需要修改点单页面。",
+                    "operationNote": "我会定位当前页面并直接修改项目文件。",
+                    "proposedSteps": ["定位页面文件", "修改必要文件", "运行校验"],
+                    "verificationSteps": ["运行 build:h5"],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+        request,
+    )
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert parsed_events[1]["event"] == "PREFLIGHT"
+    assert parsed_events[1]["data"]["intent"] == "code_change"
+    assert parsed_events[1]["data"]["riskLevel"] == "medium"
+    assert parsed_events[1]["data"]["requiresConfirmation"] is False
+    assert parsed_events[1]["data"]["blocked"] is False
+    assert any(event["event"] == "MESSAGE" for event in parsed_events)
+
+
+def test_preflight_clarifies_underspecified_api_change():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="帮我新增接口",
+        skill_ids=["jeecgboot-dev"],
+    )
+
+    events = collect_stream(
+        FakePreflightClassifyingChatService(
+            FakeJeecgClient(),
+            classification_text=json.dumps(
+                {
+                    "intent": "api_change",
+                    "confidence": 0.9,
+                    "needsClarification": True,
+                    "clarificationQuestion": "请补充接口路径、入参和期望返回。",
+                    "summary": "理解为需要新增接口。",
+                    "operationNote": "我需要先确认接口契约。",
+                    "proposedSteps": ["确认接口契约"],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+        request,
+    )
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "PREFLIGHT", "MESSAGE", "MESSAGE_END"]
+    assert parsed_events[1]["data"]["needsClarification"] is True
+    assert "接口路径" in parsed_events[2]["data"]["message"]
+
+
+def test_preflight_blocks_sensitive_path_request():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="读取 .env 里的 OpenAI API Key",
+        skill_ids=["jeecgboot-dev"],
+    )
+
+    events = collect_stream(FakeChatService(FakeJeecgClient()), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "PREFLIGHT", "MESSAGE", "MESSAGE_END"]
+    assert parsed_events[1]["data"]["blocked"] is True
+    assert parsed_events[1]["data"]["riskLevel"] == "blocked"
+    assert "敏感配置" in parsed_events[2]["data"]["message"]
+
+
+def test_preflight_requires_confirmation_for_database_change():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="帮我执行 SQL 删除用户表数据",
+        skill_ids=["jeecgboot-dev"],
+    )
+
+    events = collect_stream(FakeChatService(FakeJeecgClient()), request)
+    parsed_events = [parse_sse(event) for event in events]
+
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "PREFLIGHT", "MESSAGE", "MESSAGE_END"]
+    assert parsed_events[1]["data"]["requiresConfirmation"] is True
+    assert parsed_events[1]["data"]["riskLevel"] == "high"
+    assert "确认" in parsed_events[2]["data"]["message"]
+
+
+def test_builder_tools_enabled_from_recent_workspace_context():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="按图继续修改这个页面",
+        context_source=ContextSource(
+            recent_messages=[
+                ContextMessage(
+                    role="user",
+                    content="直接修改 lululai-luwei-regenerate-c85937bf 这个项目",
+                )
+            ]
+        ),
+    )
+    service = ChatService(FakeJeecgClient())
+
+    tool_names = service._available_tool_names(None, request=request)
+
+    assert tool_names is not None
+    assert "builder_read_file" in tool_names
+    assert "builder_write_file" in tool_names
+    assert "weather" not in tool_names
+
+
+def test_direct_project_file_change_keeps_builder_write_tools_from_workspace_context():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="直接改项目中的文件不要输出页面代码",
+        context_source=ContextSource(
+            recent_messages=[
+                ContextMessage(
+                    role="user",
+                    content="直接修改 lululai-luwei-regenerate-c85937bf 这个项目",
+                )
+            ]
+        ),
+    )
+    service = ChatService(FakeJeecgClient())
+    tool_names = service._available_tool_names(None, request=request)
+    preflight = service.agent_preflight.analyze(request, tool_names)
+
+    assert preflight.intent == "code_change"
+    assert preflight.risk_level == "medium"
+    assert preflight.requires_confirmation is False
+    assert preflight.allowed_tools is not None
+    assert "builder_read_file" in preflight.allowed_tools
+    assert "builder_write_file" in preflight.allowed_tools
+    assert "builder_apply_patch" in preflight.allowed_tools
+
+
+def test_delete_page_is_code_change_not_high_risk_data_delete():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="删除点单页面",
+        skill_ids=["jeecgboot-uniapp-template"],
+    )
+    service = ChatService(FakeJeecgClient())
+    tool_names = service._available_tool_names(request.skill_ids, request=request)
+    preflight = service.agent_preflight.analyze(request, tool_names)
+
+    assert preflight.intent == "code_change"
+    assert preflight.risk_level == "medium"
+    assert preflight.requires_confirmation is False
+    assert preflight.allowed_tools is not None
+    assert "builder_write_file" in preflight.allowed_tools
+
+
+def test_builder_tools_enabled_from_active_snapshot_metadata():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="继续调整页面",
+        context_source=ContextSource(
+            summary=ContextSummary(
+                text="当前正在修改移动端点餐页。",
+                metadata={
+                    "contextMode": "active_snapshot",
+                    "workspace": {"workspaceId": "lululai-luwei-regenerate-c85937bf"},
+                },
+            )
+        ),
+    )
+    service = ChatService(FakeJeecgClient())
+
+    tool_names = service._available_tool_names(None, request=request)
+
+    assert tool_names is not None
+    assert "builder_apply_patch" in tool_names
+
+
+def test_continue_active_task_snapshot_keeps_builder_write_tools():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="继续调整这个页面",
+        context_source=ContextSource(
+            active_task_snapshots=[
+                ContextFragment(
+                    type="active_task_snapshot",
+                    text="当前任务状态快照：\n当前工作区=lululai-luwei-regenerate-c85937bf\n相关文件=[\"src/pages/order/order.vue\"]",
+                    metadata={
+                        "workspaceId": "lululai-luwei-regenerate-c85937bf",
+                        "activeWorkspaceId": "lululai-luwei-regenerate-c85937bf",
+                        "activeFiles": ["src/pages/order/order.vue"],
+                    },
+                )
+            ],
+        ),
+    )
+    service = ChatService(FakeJeecgClient())
+    tool_names = service._available_tool_names(None, request=request)
+    preflight = service.agent_preflight.analyze(request, tool_names)
+
+    assert tool_names is not None
+    assert preflight.intent == "code_change"
+    assert preflight.risk_level == "medium"
+    assert preflight.allowed_tools is not None
+    assert "builder_read_file" in preflight.allowed_tools
+    assert "builder_write_file" in preflight.allowed_tools
+    assert "builder_apply_patch" in preflight.allowed_tools
+
+
+def test_builder_tools_not_enabled_for_plain_chat_without_workspace_context():
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="今天 AI 新闻有哪些",
+    )
+    service = ChatService(FakeJeecgClient())
+
+    tool_names = service._available_tool_names(None, enable_search=True, request=request)
+
+    assert tool_names == ["weather", "web_search"]
 
 
 def test_model_request_filters_tools_by_skill():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="开发一个小程序页面",
         skill_ids=["jeecgboot-uniapp-template"],
@@ -317,11 +722,14 @@ def test_model_request_filters_tools_by_skill():
         use_tools=True,
     )
 
-    assert "tools" not in payload
+    assert "tools" in payload
+    tool_names = {item["function"]["name"] for item in payload["tools"]}
+    assert "builder_read_file" in tool_names
+    assert "weather" not in tool_names
 
 
 def test_model_request_exposes_web_search_only_when_enabled():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="查询 JeecgBoot 最新版本",
         enable_search=True,
@@ -349,7 +757,7 @@ def test_model_request_exposes_web_search_only_when_enabled():
 
 
 def test_chat_stream_error_event():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev"),
         input="你好",
     )
@@ -357,13 +765,13 @@ def test_chat_stream_error_event():
     events = collect_stream(ChatService(FailingJeecgClient()), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert parsed_events[0]["event"] == "INIT_REQUEST_ID"
+    assert parsed_events[0]["event"] == "RUN_STARTED"
     assert parsed_events[-1]["event"] == "ERROR"
     assert "请选择 AI 模型" in parsed_events[-1]["data"]["message"]
 
 
 def test_unknown_skill_returns_structured_error_before_model_lookup():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="你好",
         skill_ids=["missing-skill"],
@@ -372,14 +780,14 @@ def test_unknown_skill_returns_structured_error_before_model_lookup():
     events = collect_stream(ChatService(UnexpectedJeecgClient()), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "ERROR"]
     assert parsed_events[-1]["data"]["code"] == "SKILL_NOT_FOUND"
     assert parsed_events[-1]["data"]["skillIds"] == ["missing-skill"]
     assert "Skill 不存在或未注册" in parsed_events[-1]["data"]["message"]
 
 
 def test_conflicting_single_skill_returns_structured_error():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="开发一个页面",
         skill_ids=["jeecgboot-dev", "jeecgboot-uniapp-template"],
@@ -388,7 +796,7 @@ def test_conflicting_single_skill_returns_structured_error():
     events = collect_stream(ChatService(UnexpectedJeecgClient()), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "ERROR"]
     assert parsed_events[-1]["data"]["code"] == "SKILL_CONFLICT"
     assert parsed_events[-1]["data"]["skillIds"] == ["jeecgboot-dev", "jeecgboot-uniapp-template"]
     assert "互斥" in parsed_events[-1]["data"]["message"]
@@ -403,7 +811,7 @@ def test_skill_missing_tool_dependency_returns_structured_error():
         instruction="测试",
         default_tool_names=["missing-tool"],
     )
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
         input="你好",
         skill_ids=["broken-skill"],
@@ -412,14 +820,14 @@ def test_skill_missing_tool_dependency_returns_structured_error():
     events = collect_stream(ChatService(UnexpectedJeecgClient(), skill_registry=registry), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert [event["event"] for event in parsed_events] == ["INIT_REQUEST_ID", "ERROR"]
+    assert [event["event"] for event in parsed_events] == ["RUN_STARTED", "ERROR"]
     assert parsed_events[-1]["data"]["code"] == "SKILL_TOOL_UNAVAILABLE"
     assert parsed_events[-1]["data"]["skillIds"] == ["broken-skill"]
     assert parsed_events[-1]["data"]["toolNames"] == ["missing-tool"]
 
 
 def test_weather_tool_stream_events():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev"),
         input="广州天气怎么样",
     )
@@ -484,21 +892,22 @@ def test_weather_tool_stream_events():
     parsed_events = [parse_sse(event) for event in events]
 
     assert [event["event"] for event in parsed_events] == [
-        "INIT_REQUEST_ID",
+        "RUN_STARTED",
+        "PREFLIGHT",
         "TOOL_CALL",
         "TOOL_RESULT",
         "MESSAGE",
         "MESSAGE_END",
     ]
-    assert parsed_events[1]["data"]["toolName"] == "weather"
-    assert parsed_events[1]["data"]["input"] == {"city": "广州"}
-    assert parsed_events[2]["data"]["result"]["city"] == "广州"
-    assert parsed_events[2]["data"]["result"]["source"] == "QWeather"
-    assert parsed_events[2]["data"]["result"]["high"] == "31°C"
-    assert parsed_events[2]["data"]["result"]["low"] == "24°C"
-    assert parsed_events[2]["data"]["result"]["iconDay"] == "101"
-    assert parsed_events[2]["data"]["result"]["daily"][0]["weather"] == "多云转阴"
-    assert "广州天气" in parsed_events[3]["data"]["message"]
+    assert parsed_events[2]["data"]["toolName"] == "weather"
+    assert parsed_events[2]["data"]["input"] == {"city": "广州"}
+    assert parsed_events[3]["data"]["result"]["city"] == "广州"
+    assert parsed_events[3]["data"]["result"]["source"] == "QWeather"
+    assert parsed_events[3]["data"]["result"]["high"] == "31°C"
+    assert parsed_events[3]["data"]["result"]["low"] == "24°C"
+    assert parsed_events[3]["data"]["result"]["iconDay"] == "101"
+    assert parsed_events[3]["data"]["result"]["daily"][0]["weather"] == "多云转阴"
+    assert "广州天气" in parsed_events[4]["data"]["message"]
     assert "/geo/v2/city/lookup" not in requested_paths
 
 
@@ -551,7 +960,7 @@ def test_weather_tool_geo_404_has_actionable_error():
 
 
 def test_weather_tool_missing_key_returns_error_event():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev"),
         input="广州天气怎么样",
     )
@@ -562,14 +971,15 @@ def test_weather_tool_missing_key_returns_error_event():
     events = collect_stream(FakeToolCallingChatService(FakeJeecgClient(), registry), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert parsed_events[0]["event"] == "INIT_REQUEST_ID"
-    assert parsed_events[1]["event"] == "TOOL_CALL"
+    assert parsed_events[0]["event"] == "RUN_STARTED"
+    assert parsed_events[1]["event"] == "PREFLIGHT"
+    assert parsed_events[2]["event"] == "TOOL_CALL"
     assert parsed_events[-1]["event"] == "ERROR"
     assert "QWEATHER_API_HOST" in parsed_events[-1]["data"]["message"] or "QWEATHER_API_KEY" in parsed_events[-1]["data"]["message"]
 
 
 def test_web_search_tool_stream_events():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev"),
         input="JeecgBoot 最新版本是什么",
         enable_search=True,
@@ -594,20 +1004,21 @@ def test_web_search_tool_stream_events():
     parsed_events = [parse_sse(event) for event in events]
 
     assert [event["event"] for event in parsed_events] == [
-        "INIT_REQUEST_ID",
+        "RUN_STARTED",
+        "PREFLIGHT",
         "TOOL_CALL",
         "TOOL_RESULT",
         "MESSAGE",
         "MESSAGE_END",
     ]
-    assert parsed_events[1]["data"]["toolName"] == "web_search"
-    assert parsed_events[2]["data"]["result"]["query"] == "JeecgBoot 最新版本"
-    assert parsed_events[2]["data"]["result"]["results"][0]["url"] == "https://www.jeecg.com"
-    assert "搜索结果" in parsed_events[3]["data"]["message"]
+    assert parsed_events[2]["data"]["toolName"] == "web_search"
+    assert parsed_events[3]["data"]["result"]["query"] == "JeecgBoot 最新版本"
+    assert parsed_events[3]["data"]["result"]["results"][0]["url"] == "https://www.jeecg.com"
+    assert "搜索结果" in parsed_events[4]["data"]["message"]
 
 
 def test_web_search_tool_unwraps_duckduckgo_redirect_url():
-    request = AppChatStreamRequest(
+    request = chat_request(
         app=AiAppConfig(id="ai-sdk-dev"),
         input="OpenAI Codex",
         enable_search=True,
@@ -630,7 +1041,96 @@ def test_web_search_tool_unwraps_duckduckgo_redirect_url():
     events = collect_stream(FakeWebSearchChatService(FakeJeecgClient(), registry), request)
     parsed_events = [parse_sse(event) for event in events]
 
-    assert parsed_events[2]["data"]["result"]["results"][0]["url"] == "https://openai.com/codex"
+    assert parsed_events[3]["data"]["result"]["results"][0]["url"] == "https://openai.com/codex"
+
+
+def test_builder_agent_loop_verifies_and_repairs_failed_build(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    workspace_path = tmp_path / "ai-builder-workspaces" / "workspace-1"
+    workspace_path.mkdir(parents=True)
+    (workspace_path / "package.json").write_text(
+        json.dumps({"scripts": {"build:h5": "uni build"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    request = chat_request(
+        app=AiAppConfig(id="ai-sdk-dev", model_id="model-1"),
+        input="修改点餐页",
+    )
+    registry = ToolRegistry()
+    registry._tools = {
+        "builder_write_file": FakeBuilderWriteTool(),
+        "builder_run_script": FakeBuilderRunScriptTool(),
+        "builder_check_preview_h5": FakeBuilderCheckPreviewH5Tool(),
+    }
+    service = FakeBuilderRepairChatService(FakeJeecgClient(), registry)
+
+    async def classify_builder_change(model, request):
+        return service._parse_intent_classification(
+            json.dumps(
+                {
+                    "intent": "code_change",
+                    "confidence": 0.96,
+                    "summary": "理解为需要修改点餐页。",
+                    "operationNote": "我会直接修改 Builder 工作区文件并运行校验。",
+                    "proposedSteps": ["修改页面文件", "运行构建", "根据错误修复"],
+                    "verificationSteps": ["运行 build:h5"],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    service._classify_agent_intent = classify_builder_change
+
+    events = collect_stream(service, request)
+    parsed_events = [parse_sse(event) for event in events]
+    tool_results = [event for event in parsed_events if event["event"] == "TOOL_RESULT"]
+    tool_calls = [event for event in parsed_events if event["event"] == "TOOL_CALL"]
+
+    assert [event["data"]["toolName"] for event in tool_calls] == [
+        "builder_write_file",
+        "builder_run_script",
+        "builder_write_file",
+        "builder_run_script",
+        "builder_check_preview_h5",
+    ]
+    assert tool_results[1]["data"]["toolName"] == "builder_run_script"
+    assert tool_results[1]["data"]["result"]["command"] == ["pnpm", "build:h5"]
+    assert tool_results[1]["data"]["status"] == "failed"
+    assert tool_results[3]["data"]["toolName"] == "builder_run_script"
+    assert tool_results[3]["data"]["status"] == "success"
+    assert tool_results[4]["data"]["toolName"] == "builder_check_preview_h5"
+    assert tool_results[4]["data"]["status"] == "success"
+    assert parsed_events[-2]["event"] == "MESSAGE"
+
+
+def test_builder_zero_delta_write_does_not_emit_file_changes():
+    async def stream_complete(model, request, messages, use_tools=False):
+        if False:
+            yield ""
+
+    agent_loop = BuilderAgentLoop(
+        tool_resolver=lambda item: (_ for _ in ()).throw(AssertionError("not used")),
+        tool_call_id=lambda item: "call-1",
+        assistant_tool_call_message=lambda item: {},
+        tool_result_message=lambda tool_call_id, tool_result: {},
+        stream_complete=stream_complete,
+    )
+
+    assert agent_loop._file_changes(
+        {
+            "path": "src/pages/order/order.vue",
+            "additions": 0,
+            "deletions": 0,
+        }
+    ) == []
+    assert agent_loop._file_changes(
+        {
+            "fileChanges": [
+                {"path": "src/pages/order/order.vue", "additions": 0, "deletions": 0},
+                {"path": "pages.config.ts", "additions": 1, "deletions": 0},
+            ]
+        }
+    ) == [{"path": "pages.config.ts", "additions": 1, "deletions": 0}]
 
 
 def test_model_non_json_response_has_actionable_error():

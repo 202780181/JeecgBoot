@@ -5,10 +5,17 @@ instruction_file: instructions.md
 category: JeecgBoot
 selection_mode: multiple
 available_tool_names:
-  - weather
   - web_search
+  - builder_list_workspaces
+  - builder_find_workspace
+  - builder_get_snapshot
+  - builder_search_files
+  - builder_grep_files
+  - builder_read_file
+  - builder_write_file
+  - builder_apply_patch
 default_tool_names:
-  - weather
+  - builder_list_workspaces
 forbidden_tool_names: []
 spec_kit:
   enabled: true

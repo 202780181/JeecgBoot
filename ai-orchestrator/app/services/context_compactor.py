@@ -36,7 +36,15 @@ class ContextCompactor:
             raise ValueError("没有可压缩的会话消息")
         model = await self.jeecg_client.get_model_config(request.app.model_id, request.user_context)
         prompt = self._build_prompt(request)
-        summary = await self._complete_json(model, prompt)
+        try:
+            summary = await self._complete_json(model, prompt)
+            fallback_reason = ""
+        except ValueError as exc:
+            if self._is_retryable_model_summary_error(str(exc)):
+                summary = self._fallback_summary(request, str(exc))
+                fallback_reason = str(exc)
+            else:
+                raise
         summary_text = json.dumps(summary.model_dump(), ensure_ascii=False, indent=2)
         latest_message_id = self._latest_message_id(request)
         active_context_snapshot = self._build_active_context_snapshot(request, summary, latest_message_id)
@@ -65,6 +73,8 @@ class ContextCompactor:
                 "modelId": model.id,
                 "modelName": model.model_name,
                 "tokenLedger": token_ledger,
+                "fallback": bool(fallback_reason),
+                "fallbackReason": fallback_reason,
             },
         )
 
@@ -399,6 +409,50 @@ class ContextCompactor:
         if isinstance(value, (int, float, bool)):
             return str(value)
         return json.dumps(value, ensure_ascii=False)
+
+    def _is_retryable_model_summary_error(self, message: str) -> bool:
+        return any(
+            marker in message
+            for marker in (
+                "模型摘要压缩返回空内容",
+                "模型摘要压缩未返回 choices",
+                "模型摘要压缩返回非 JSON",
+                "模型摘要压缩返回内容不符合结构",
+            )
+        )
+
+    def _fallback_summary(self, request: ContextCompactionRequest, reason: str) -> StructuredConversationSummary:
+        messages = [
+            message
+            for message in request.context_source.messages
+            if message.role in {"user", "assistant"} and (message.content or "").strip()
+        ]
+        fragments = [
+            fragment
+            for fragment in request.context_source.fragments
+            if (fragment.text or "").strip()
+        ]
+        latest_user = next((message for message in reversed(messages) if message.role == "user"), None)
+        latest_assistant = next((message for message in reversed(messages) if message.role == "assistant"), None)
+        important_files = []
+        tool_results = []
+        for fragment in fragments[-20:]:
+            if fragment.type in {"file_change", "workspace_snapshot", "build_result", "preview_url"}:
+                important_files.append(self._truncate(fragment.text, 300))
+            elif fragment.type in {"tool_result", "skill_result", "source"}:
+                tool_results.append(self._truncate(fragment.text, 300))
+        return StructuredConversationSummary(
+            objective=self._truncate(latest_user.content if latest_user else "继续当前会话任务", 500),
+            userPreferences=[],
+            projectConstraints=["摘要模型本轮返回异常，已使用本地保底压缩。", f"异常原因：{self._truncate(reason, 300)}"],
+            importantDecisions=[],
+            completedWork=[self._truncate(latest_assistant.content, 500)] if latest_assistant else [],
+            currentState=self._truncate(messages[-1].content, 500) if messages else "",
+            openIssues=[],
+            importantFiles=important_files[:10],
+            toolResults=tool_results[:10],
+            nextSteps=["继续读取 active context snapshot、最近原文消息和相关 fragments 后执行下一轮任务。"],
+        )
 
     def _int_param(self, params: dict, keys: tuple[str, ...], default: int) -> int:
         for key in keys:

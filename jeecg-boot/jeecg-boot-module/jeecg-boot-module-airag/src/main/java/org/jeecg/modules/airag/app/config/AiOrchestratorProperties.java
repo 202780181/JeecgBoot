@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 public class AiOrchestratorProperties {
     private String baseUrl = "http://127.0.0.1:9100";
     private int timeout = 120000;
+    private int streamReadTimeout = 600000;
+    private int compactTimeout = 180000;
     private boolean contextEmbeddingEnabled = true;
     private String contextEmbedModelId;
     private int contextEmbeddingBatchSize = 20;
